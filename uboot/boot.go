@@ -137,6 +137,15 @@ func (b *Boot) Start() bool {
 
 	os.Stdout.WriteString(ubootLogo)
 	b.printf(ulog.SetANSI(ulog.ANSI.Bold, "uboot start"))
+	if b.bootTimeout > 0 {
+		t := time.AfterFunc(b.bootTimeout, func() {
+			b.printf(ulog.SetANSI(ulog.ANSI.Magenta, "normal uint start timeout!"))
+			panic("normal uint start timeout!")
+		})
+
+		defer t.Stop()
+	}
+
 	defer func() {
 		b.printf(ulog.SetANSI(ulog.ANSI.Bold, "uboot done"))
 	}()
@@ -180,19 +189,8 @@ func (b *Boot) Start() bool {
 			}(i)
 		}
 		b.printf(ulog.SetANSI(ulog.ANSI.Green, "create normal uint done"))
-
 		b.printf(ulog.SetANSI(ulog.ANSI.Blue, "waiting for all normal uint done"))
-		if b.bootTimeout > 0 {
-			t := time.AfterFunc(b.bootTimeout, func() {
-				b.printf(ulog.SetANSI(ulog.ANSI.Magenta, "normal uint start timeout!"))
-				panic("normal uint start timeout!")
-			})
-
-			wg.Wait()
-			t.Stop()
-		} else {
-			wg.Wait()
-		}
+		wg.Wait()
 		b.printf(ulog.SetANSI(ulog.ANSI.Green, "all normal uint done"))
 	}
 
