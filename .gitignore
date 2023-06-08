@@ -1,0 +1,13 @@
+
+**/.*
+**/go.mod
+**/go.sum
+!/.gitignore
+!/go.mod
+!/go.sum
+**/Makefile
+# **/*_test.go
+
+**/test
+**/testdata
+**/vendor
