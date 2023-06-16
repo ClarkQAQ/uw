@@ -11,7 +11,8 @@ const (
 	UintFront      UintType = iota // 最早运行 (运行时机: 1)
 	UintBackground                 // 后台运行 (运行时机: 2)
 	UintNormal                     // 默认运行 (运行时机: 3)
-	UintAfter                      // 最后运行 (运行时机: 4)
+	UintDaemon                     // 守护运行 (运行时机: 4) (函数退出后, 会再次运行)
+	UintAfter                      // 后续运行 (运行时机: 5)
 )
 
 type UintHandler func(c *Context) error
@@ -32,6 +33,8 @@ func UintTypeString(utype UintType) string {
 		return "background"
 	case UintNormal:
 		return "normal"
+	case UintDaemon:
+		return "daemon"
 	case UintAfter:
 		return "after"
 	default:
@@ -44,7 +47,7 @@ func Uint(name string, utype UintType, handler UintHandler) *UintAgent {
 		name:    name,
 		handler: handler,
 		utype:   utype,
-		recover: true,
+		recover: false,
 	}
 }
 
@@ -53,8 +56,8 @@ func (u *UintAgent) Timeout(t time.Duration) *UintAgent {
 	return u
 }
 
-func (u *UintAgent) Recover(b bool) *UintAgent {
-	u.recover = b
+func (u *UintAgent) Recover() *UintAgent {
+	u.recover = true
 	return u
 }
 
