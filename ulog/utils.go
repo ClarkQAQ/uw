@@ -3,6 +3,7 @@ package ulog
 import (
 	"fmt"
 	"regexp"
+	"runtime"
 )
 
 // 终端颜色数据
@@ -48,4 +49,14 @@ func CleanANSI(s string) string {
 
 func SprintfANSI(ansi string, format string, val ...interface{}) string {
 	return ansi + fmt.Sprintf(format, val...) + ANSI.Reset
+}
+
+func Stack(all bool) []byte {
+	buf := []byte{}
+	n := runtime.Stack(buf, all)
+	if n < 0 {
+		return nil
+	}
+
+	return buf[:n]
 }
