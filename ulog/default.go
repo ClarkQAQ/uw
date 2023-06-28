@@ -33,7 +33,8 @@ func Warn(format string, args ...interface{}) {
 }
 
 func Error(format string, args ...interface{}) {
-	globalLogger.Log(LevelError, defaultCaller, format, args...)
+	globalLogger.Log(LevelError, defaultCaller, format+"\r\nError Stack:\r\n%s",
+		append(args, Stack(1000, 1))...)
 }
 
 func Fatal(format string, args ...interface{}) {

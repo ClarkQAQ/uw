@@ -1,6 +1,7 @@
 package ulog
 
 import (
+	"bytes"
 	"fmt"
 	"regexp"
 	"runtime"
@@ -51,12 +52,29 @@ func SprintfANSI(ansi string, format string, val ...interface{}) string {
 	return ansi + fmt.Sprintf(format, val...) + ANSI.Reset
 }
 
-func Stack(all bool) []byte {
-	buf := []byte{}
-	n := runtime.Stack(buf, all)
-	if n < 0 {
-		return nil
+func Stack(maxDepth int, skip ...int) string {
+	var (
+		buffer              = bytes.NewBuffer(nil)
+		name, index, number = "", 1, 1
+		pc, file, line, ok  = uintptr(0), "", -1, true
+	)
+	if len(skip) > 0 {
+		number += skip[0]
 	}
+	for i := number; i < maxDepth; i++ {
+		pc, file, line, ok = runtime.Caller(i)
+		if ok {
+			if fn := runtime.FuncForPC(pc); fn == nil {
+				name = "unknown"
+			} else {
+				name = fn.Name()
+			}
 
-	return buf[:n]
+			buffer.WriteString(fmt.Sprintf("%d.%s\n\t%s:%d\n", index, name, file, line))
+			index++
+		} else {
+			break
+		}
+	}
+	return buffer.String()
 }

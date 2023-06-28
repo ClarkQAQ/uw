@@ -161,7 +161,8 @@ func (l *Logger) Warn(format string, args ...interface{}) {
 }
 
 func (l *Logger) Error(format string, args ...interface{}) {
-	l.Log(LevelError, defaultCaller, format, args...)
+	l.Log(LevelError, defaultCaller, format+"\r\nError Stack:\r\n%s",
+		append(args, Stack(1000, 1))...)
 }
 
 func (l *Logger) Fatal(format string, args ...interface{}) {
