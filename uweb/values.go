@@ -86,7 +86,7 @@ const (
 	HeaderXRatelimitRemaining    = "X-Ratelimit-Remaining"
 	HeaderXRatelimitReset        = "X-Ratelimit-Reset"
 
-	defaultStatusCode = 200
+	defaultStatusCode = StatusOK
 	StatusOK          = 200
 )
 

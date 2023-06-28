@@ -1,26 +1,49 @@
 package urest
 
 import (
-	"path"
+	"fmt"
+	"net/http"
 	"strings"
 )
 
 type Groupor interface {
-	Invoke(prefix string, tags []string, handlerList []Handler) ([]*Methodop, error)
+	Invoke(r *Rest, prefix, tags []string, req AnyRequest,
+		resp AnyResponse, recover_ Recover, handlerList []Handler) error
 }
 
 // 群组元数据
 type Groupot struct {
-	prefix  string
-	tags    []string
-	structs []any
+	prefix         []string
+	tags           []string
+	customRequest  AnyRequest
+	customResponse AnyResponse
+	customRecover  Recover
+	structs        []any
 }
 
 func Group(prefix string, structs ...any) *Groupot {
 	return &Groupot{
-		prefix:  prefix,
+		prefix:  strings.Split(prefix, "/"),
 		structs: structs,
 	}
+}
+
+func (g *Groupot) Request(fn AnyRequest) *Groupot {
+	g.customRequest = fn
+	return g
+}
+
+func (g *Groupot) Response(fn func(w http.ResponseWriter, resp any), rfn ...FieldFn) *Groupot {
+	g.customResponse.Response = fn
+	if len(rfn) > 0 {
+		g.customResponse.Field = rfn[0]
+	}
+	return g
+}
+
+func (g *Groupot) Recover(fn Recover) *Groupot {
+	g.customRecover = fn
+	return g
 }
 
 func (g *Groupot) Tags(ss ...string) *Groupot {
@@ -28,43 +51,63 @@ func (g *Groupot) Tags(ss ...string) *Groupot {
 	return g
 }
 
-func (g *Groupot) Invoke(prefix string, tags []string, handlerList []Handler) ([]*Methodop, error) {
-	mps := []*Methodop{}
-	prefix = path.Join(prefix, g.prefix)
-	tags = append(tags, g.tags...)
+func (g *Groupot) Invoke(r *Rest, prefix, tags []string, req AnyRequest,
+	resp AnyResponse, recover_ Recover, handlerList []Handler,
+) error {
+	prefix, tags = append(prefix, g.prefix...), append(tags, g.tags...)
+
+	if g.customRequest != nil {
+		req = g.customRequest
+	}
+	if g.customResponse.Response != nil {
+		resp.Response = g.customResponse.Response
+	}
+	if g.customResponse.Field != nil {
+		resp.Field = g.customResponse.Field
+	}
+	if g.customRecover != nil {
+		recover_ = g.customRecover
+	}
 
 	for i := 0; i < len(g.structs); i++ {
-		rvs, e := structReflectValue(g.structs[i])
+		srv, e := structReflectMethodValue(g.structs[i])
 		if e != nil {
-			return nil, e
+			return e
 		}
 
-		for i := 0; i < len(rvs); i++ {
-			if mw, ok := rvs[i].Value.Interface().(func() Middlewareor); ok {
+		for i := 0; i < len(srv); i++ {
+			if mw, ok := srv[i].Value.Interface().(func() Middlewareor); ok {
 				handlerList = append(handlerList, mw().Invoke())
 			}
 		}
 
-		for i := 0; i < len(rvs); i++ {
-			switch val := rvs[i].Value.Interface().(type) {
+		for i := 0; i < len(srv); i++ {
+			switch fn := srv[i].Value.Interface().(type) {
 			case func() Groupor:
-				tmps, e := val().Invoke(prefix, tags, handlerList)
-				if e != nil {
-					return nil, e
+				if e := fn().Invoke(r, prefix, tags, req,
+					resp, recover_, handlerList); e != nil {
+					return e
 				}
-
-				mps = append(mps, tmps...)
 			case func() Methodor:
-				mp, e := val().Invoke(strings.ToUpper(rvs[i].Method.Name),
-					prefix, g.tags, handlerList)
-				if e != nil {
-					return nil, e
+				rt := &Restot{
+					method:       strings.ToUpper(srv[i].Name),
+					path:         prefix,
+					tags:         tags,
+					handlerField: &HandlerField{},
+					handlerList:  append(handlerList, func(_ *Context) {}),
 				}
 
-				mps = append(mps, mp)
+				rt.summary, rt.detail, rt.handlerList[len(rt.handlerList)-1], e = fn().
+					Invoke(req, resp, recover_, rt.handlerField)
+				if e != nil {
+					return fmt.Errorf("urest: %s method %s.%s: %s",
+						rt.method, srv[i].Type.Name(), srv[i].Name, e)
+				}
+
+				r.restotList = append(r.restotList, rt)
 			}
 		}
 	}
 
-	return mps, nil
+	return nil
 }

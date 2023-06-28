@@ -1,12 +1,26 @@
 package urest
 
 import (
-	"context"
 	"fmt"
 	"net/http"
+	"reflect"
 )
 
-type Handler func(c *Context)
+type (
+	Handler                      func(c *Context)
+	Recover                      func(c *Context, e error)
+	RequestHandler[req, res any] func(c *Context, input *req) (res, error)
+	Request[req any]             func(r *http.Request, input *req) error
+	Response[res any]            struct {
+		Response func(w http.ResponseWriter, resp res)
+		Field    FieldFn
+	}
+	AnyRequest  func(r *http.Request, input any) error
+	AnyResponse struct {
+		Response func(w http.ResponseWriter, resp any)
+		Field    FieldFn
+	}
+)
 
 type Middlewareor interface {
 	Invoke() Handler
@@ -29,103 +43,125 @@ func Middleware(handler Handler) Middlewareor {
 
 // 方法接口
 type Methodor interface {
-	Invoke(method, prefix string, tags []string, handler []Handler) (*Methodop, error)
+	Invoke(request AnyRequest, response AnyResponse, recover_ Recover, hf *HandlerField) (string, string, Handler, error)
 }
 
 // 方法结构
-type Methodot[i, o any] struct {
-	handler     func(ctx context.Context, input *i) (o, error)
-	tags        []string // 标签
-	summary     string   // 摘要
-	description string   // 描述
+type Methodot[req, res any] struct {
+	summary        string // 摘要
+	detail         string // 描述
+	customRequest  Request[req]
+	customResponse Response[res]
+	customRecover  Recover
+	handler        RequestHandler[req, res]
 }
 
 // 新建方法
-func Method[req, res any](handler func(ctx context.Context, input *req) (res, error)) *Methodot[req, res] {
+func Method[req, res any](handler RequestHandler[req, res]) *Methodot[req, res] {
 	return &Methodot[req, res]{
-		summary:     "N/A",
-		description: "N/A",
-		handler:     handler,
+		summary: "N/A",
+		detail:  "N/A",
+		handler: handler,
 	}
 }
 
-func (m *Methodot[i, o]) Tags(ss ...string) *Methodot[i, o] {
-	m.tags = append(m.tags, ss...)
-	return m
-}
-
-func (m *Methodot[i, o]) Summary(summary string) *Methodot[i, o] {
+func (m *Methodot[req, res]) Summary(summary string) *Methodot[req, res] {
 	m.summary = summary
 	return m
 }
 
-func (m *Methodot[i, o]) Description(desc string) *Methodot[i, o] {
-	m.description = desc
+func (m *Methodot[req, res]) Detail(detail string) *Methodot[req, res] {
+	m.detail = detail
 	return m
 }
 
-func (m *Methodot[i, o]) Handler(handler func(ctx context.Context, input *i) (o, error)) *Methodot[i, o] {
+func (m *Methodot[req, res]) Request(fn Request[req]) *Methodot[req, res] {
+	m.customRequest = fn
+	return m
+}
+
+func (m *Methodot[req, res]) Response(fn func(w http.ResponseWriter, resp res), rfn ...FieldFn) *Methodot[req, res] {
+	m.customResponse.Response = fn
+	if len(rfn) > 0 {
+		m.customResponse.Field = rfn[0]
+	}
+	return m
+}
+
+func (m *Methodot[req, res]) Recover(fn Recover) *Methodot[req, res] {
+	m.customRecover = fn
+	return m
+}
+
+func (m *Methodot[req, res]) Handle(handler RequestHandler[req, res]) *Methodot[req, res] {
 	m.handler = handler
 	return m
 }
 
-func (m *Methodot[req, res]) Invoke(method, prefix string, tags []string, handler []Handler) (*Methodop, error) {
-	mp := &Methodop{
-		Method:      method,
-		Path:        prefix,
-		Tags:        append(tags, m.tags...),
-		Summary:     m.summary,
-		Description: m.description,
+func (m *Methodot[req, res]) Invoke(request AnyRequest, response AnyResponse, recover_ Recover, hf *HandlerField) (string, string, Handler, error) {
+	if m.customRequest != nil {
+		request = func(r *http.Request, input any) error {
+			return m.customRequest(r, input.(*req))
+		}
+	} else if request == nil {
+		request = func(r *http.Request, input any) error {
+			return DefaultRequest(r, input.(*req))
+		}
 	}
 
-	h, e := m.getHandler()
+	if m.customResponse.Response != nil {
+		response.Response = func(w http.ResponseWriter, resp any) {
+			m.customResponse.Response(w, resp.(res))
+		}
+	} else if response.Response == nil {
+		response.Response = func(w http.ResponseWriter, resp any) {
+			DefaultResponse(w, resp)
+		}
+	}
+
+	if m.customResponse.Field != nil {
+		response.Field = m.customResponse.Field
+	}
+
+	if m.customRecover != nil {
+		recover_ = m.customRecover
+	} else if recover_ == nil {
+		recover_ = DefaultRecover
+	}
+
+	if v := reflect.TypeOf(new(req)).
+		Elem(); v.Kind() == reflect.Struct {
+		l, e := reflectField(false, v)
+		if e != nil {
+			return "", "", nil, fmt.Errorf("reflect request field error: %w", e)
+		}
+
+		hf.Request = append(hf.Request, l...)
+	}
+
+	l, e := reflectField(true, reflect.TypeOf(new(res)).
+		Elem())
 	if e != nil {
-		return nil, e
+		return "", "", nil, fmt.Errorf("reflect response field error: %w", e)
 	}
 
-	mp.Handler = append(handler, h)
-	return mp, nil
-}
+	if response.Field != nil {
+		l = response.Field(l)
+	}
 
-func (m *Methodot[i, o]) getHandler() (Handler, error) {
-	return func(c *Context) {
-		// ctx := r.Context()
+	hf.Response = append(hf.Response, l...)
 
-		// inp := new(req)
-		// if e := parseRequest(r, inp); e != nil {
-		// 	writeError(w, e)
-		// 	return
-		// }
+	return m.summary, m.detail, func(c *Context) {
+		inp := new(req)
+		if e := request(c.Req, inp); e != nil {
+			recover_(c, e)
+		}
 
-		// res, e := m.handler(ctx, inp)
-		// if e != nil {
-		// 	writeError(w, e)
-		// 	return
-		// }
+		resp, e := m.handler(c, inp)
+		if e != nil {
+			recover_(c, e)
+		}
 
-		// writeResponse(w, res)
+		response.Response(c.Writer, resp)
 	}, nil
-}
-
-func (m *Methodot[req, res]) Request(ctx context.Context, input interface{}) (interface{}, error) {
-	inp, ok := input.(*req)
-	if !ok {
-		return nil, fmt.Errorf("%w of input: %T, expected: %T", ErrInvalidType, input, new(req))
-	}
-
-	return m.handler(ctx, inp)
-}
-
-func parseRequest(r *http.Request, inp interface{}) error {
-	return nil
-}
-
-func writeError(w http.ResponseWriter, e error) {
-	w.WriteHeader(http.StatusInternalServerError)
-	fmt.Fprintf(w, "InternalServerError: %s", e.Error())
-}
-
-func writeResponse(w http.ResponseWriter, res interface{}) {
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(fmt.Sprintf("%v", res)))
 }

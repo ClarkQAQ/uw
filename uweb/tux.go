@@ -1,6 +1,7 @@
 package uweb
 
 import (
+	"io"
 	"net"
 	"net/http"
 	"sync"
@@ -68,7 +69,7 @@ func (uweb *Uweb) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	w.WriteHeader(c.Writer.status)
 
-	if _, e := w.Write(c.Writer.body.Bytes()); e != nil {
+	if _, e := io.Copy(w, c.Writer.body); e != nil {
 		panic(e)
 	}
 }

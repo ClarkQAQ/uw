@@ -10,7 +10,7 @@ import (
 type Group struct {
 	uweb       *Uweb         // Uweb
 	prefix     string        // 组前缀
-	field      *Group        // 上级组
+	parent     *Group        // 上级组
 	middleware []HandlerFunc // 组定义中间件
 }
 
@@ -18,13 +18,13 @@ func (g *Group) NewGroup(prefix string) *Group {
 	return &Group{
 		uweb:   g.uweb,
 		prefix: path.Join(g.prefix, prefix),
-		field:  g,
+		parent: g,
 	}
 }
 
-func (g *Group) upMiddlewares() (handles []HandlerFunc) {
-	if g.field != nil {
-		return append(g.field.upMiddlewares(), g.middleware...)
+func (g *Group) parentMiddlewares() (handles []HandlerFunc) {
+	if g.parent != nil {
+		return append(g.parent.parentMiddlewares(), g.middleware...)
 	}
 
 	return g.middleware
@@ -40,7 +40,7 @@ func (g *Group) Use(middleware ...HandlerFunc) {
 
 func (g *Group) Method(method, part string, handler HandlerFunc) {
 	g.uweb.tree.Set(strings.ToUpper(method)+"@"+path.Join(g.prefix, part),
-		append(g.upMiddlewares(), handler))
+		append(g.parentMiddlewares(), handler))
 }
 
 func (g *Group) Get(part string, handler HandlerFunc) {
@@ -72,14 +72,13 @@ func (g *Group) Options(part string, handler HandlerFunc) {
 }
 
 func (g *Group) Any(part string, handler HandlerFunc) {
-	methods := []string{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
-	for _, method := range methods {
-		g.Method(method, part, handler)
+	methodList := []string{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
+	for i := 0; i < len(methodList); i++ {
+		g.Method(methodList[i], part, handler)
 	}
 }
 
 func (g *Group) Object(part string, object interface{}) {
-	// 通过反射获取结构体
 	v := reflect.ValueOf(object)
 	t := v.Type()
 
