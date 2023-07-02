@@ -55,6 +55,8 @@ type Boot struct {
 	require            *umap.Hmap[string, *ContextWithCancel] // 用于模块间的依赖
 
 	allowNameRepeat bool // 允许模块名重复
+
+	customLogo string // 自定义 logo
 }
 
 func NewBoot() *Boot {
@@ -72,6 +74,11 @@ func NewBoot() *Boot {
 	}
 
 	b.SetPrintf(ulog.Printf)
+	return b
+}
+
+func (b *Boot) SetLogo(s string) *Boot {
+	b.customLogo = s
 	return b
 }
 
@@ -154,7 +161,12 @@ func (b *Boot) Start() bool {
 		return false
 	}
 
-	os.Stdout.WriteString(ubootLogo)
+	if b.customLogo != "" {
+		os.Stdout.WriteString(b.customLogo)
+	} else {
+		os.Stdout.WriteString(ubootLogo)
+	}
+
 	b.printf(ulog.SetANSI(ulog.ANSI.Bold, "uboot start"))
 	if b.bootTimeout > 0 {
 		t := time.AfterFunc(b.bootTimeout, func() {
