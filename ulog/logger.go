@@ -83,24 +83,26 @@ func (l *Logger) Async(worker int, cacheSize int64) error {
 	return nil
 }
 
+// 该方法会导致关闭前的一段日志顺序不一致
 func (l *Logger) CloseWait(ctx context.Context) {
 	if l.cache != nil {
 		for {
 			select {
+			case <-ctx.Done():
 			case g := <-l.cache:
 				l.cache <- g
-			case <-ctx.Done():
-				return
+				continue
 			default:
-				l.Close()
-				return
 			}
+
+			l.Close()
+			break
 		}
 	}
 }
 
 func (l *Logger) Close() {
-	defer func() { recover() }()
+	defer func() { _ = recover() }()
 	close(l.cache)
 }
 
