@@ -84,17 +84,15 @@ func (d *Defx[K, V]) load(key K) (_ *DefxValue[V], e error) {
 		return val, nil
 	}
 
-	val := d.m.Set(key, &DefxValue[V]{
-		value: d.defaultValue(),
-		exp:   time.Now().Add(d.expire).Unix(),
-	})
-
-	val.value, e = d.loader(key)
+	val, e := d.loader(key)
 	if e != nil {
 		return nil, e
 	}
 
-	return val, nil
+	return d.m.Set(key, &DefxValue[V]{
+		value: val,
+		exp:   time.Now().Add(d.expire).Unix(),
+	}), nil
 }
 
 func (d *Defx[K, V]) Load(key K) (val V, e error) {
