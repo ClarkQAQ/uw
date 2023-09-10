@@ -2,6 +2,7 @@ package ureq
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -237,6 +238,8 @@ func (c *Client) Send(body interface{}) *Client {
 		c.body = bytes.NewBufferString(body)
 	case []byte:
 		c.body = bytes.NewBuffer(body)
+	case io.Reader:
+		c.body = body
 	default:
 		j, err := json.Marshal(body)
 		if err != nil {
@@ -304,6 +307,12 @@ func (c *Client) CookieJar(jar http.CookieJar) *Client {
 // interrupt reading of the response body.
 func (c *Client) Timeout(timeout time.Duration) *Client {
 	c.cli.Timeout = timeout
+
+	return c
+}
+
+func (c *Client) TLSClientConfig(config *tls.Config) *Client {
+	c.cli.Transport.(*http.Transport).TLSClientConfig = config
 
 	return c
 }
