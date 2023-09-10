@@ -90,7 +90,7 @@ func (t *Tree[T]) Delete(route string) {
 	}
 }
 
-func (t *Tree[T]) Jump(route string) *Tree[T] {
+func (t *Tree[T]) Move(route string) *Tree[T] {
 	return t.get(route)
 }
 

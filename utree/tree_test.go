@@ -73,12 +73,12 @@ func TestRouteTree_Delete(t *testing.T) {
 	}
 }
 
-func TestRouteTree_Jump(t *testing.T) {
+func TestRouteTree_Move(t *testing.T) {
 	tree := New[*Value]()
 
 	tree.Set("/api/qaq/1", &Value{})
 
-	tree1 := tree.Jump("/api")
+	tree1 := tree.Move("/api")
 
 	if tree1 == nil {
 		t.Fatal("tree1 must not be nil")
@@ -153,6 +153,38 @@ func BenchmarkRouteTree_Get(b *testing.B) {
 	}
 }
 
+func BenchmarkMap_Get(b *testing.B) {
+	count := 1024
+	segmentLen := 2
+	m := map[string]*Value{}
+	r := Numeric
+	for i := 0; i < count; i++ {
+		idx := r.Intn(4)
+		var list []string
+		for j := 0; j < 4; j++ {
+			ele := string(r.Generate(segmentLen))
+			if j == idx {
+				ele = ":" + ele
+			}
+			list = append(list, ele)
+		}
+		m[strings.Join(list, defaultSeparator)] = &Value{}
+	}
+
+	var paths []string
+	for i := 0; i < count; i++ {
+		path := r.Generate(12)
+		path[0], path[3], path[6], path[9] = defaultSeparator[0], defaultSeparator[0], defaultSeparator[0], defaultSeparator[0]
+		paths = append(paths, string(path))
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		path := paths[i&(count-1)]
+		_ = m[path]
+	}
+}
+
 func BenchmarkRouteTree_Set(b *testing.B) {
 	count := 1024
 	tree := &Tree[*Value]{}
@@ -170,5 +202,25 @@ func BenchmarkRouteTree_Set(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		path := paths[i&(count-1)]
 		tree.Set(path, m)
+	}
+}
+
+func BenchmarkRouteMap_Set(b *testing.B) {
+	count := 1024
+	m := map[string]*Value{}
+	r := Numeric
+	val := &Value{}
+
+	var paths []string
+	for i := 0; i < count; i++ {
+		path := r.Generate(12)
+		path[0], path[3], path[6], path[9] = defaultSeparator[0], defaultSeparator[0], defaultSeparator[0], defaultSeparator[0]
+		paths = append(paths, string(path))
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		path := paths[i&(count-1)]
+		m[path] = val
 	}
 }
