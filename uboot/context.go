@@ -58,20 +58,19 @@ func (c *Context) Cancel() {
 func (c *Context) Require(ctx context.Context, name string) error {
 	c.printf("require: %s", name)
 
-	cwc := c.b.require.Get(name)
-	if cwc == nil {
-		return fmt.Errorf("require %s not found", name)
+	if cwc := c.b.require.Get(name); cwc != nil {
+		c.cancelTimeout()
+		defer c.timeout()
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-cwc.Done():
+			return nil
+		}
 	}
 
-	c.cancelTimeout()
-	defer c.timeout()
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-cwc.Done():
-		return nil
-	}
+	return fmt.Errorf("require %s not found", name)
 }
 
 func (c *Context) timeout() {
