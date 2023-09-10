@@ -45,6 +45,8 @@ func (uweb *Uweb) Handle(c *Context) {
 		c.handlerList = append(uweb.middleware, defaultNotFound)
 	}
 
+	defer func() { _ = recover() }()
+
 	c.Next()
 }
 
@@ -61,7 +63,7 @@ func (uweb *Uweb) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	if c.index < -10 {
 		if c.index < -50 {
-			panic(nil)
+			panic(http.ErrAbortHandler)
 		}
 
 		return

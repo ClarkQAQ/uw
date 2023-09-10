@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -171,7 +172,7 @@ func (c *Context) Query(key string) string {
 
 // POST Form Value
 func (c *Context) PostForm(key string) string {
-	c.Req.ParseForm()
+	_ = c.Req.ParseForm()
 	return c.Req.FormValue(key)
 }
 
@@ -217,7 +218,7 @@ func (c *Context) Sprintf(code int, format string, values ...any) {
 		c.SetHeader(HeaderContentType, "text/html;  charset=utf-8")
 	}
 
-	c.Writer.Write([]byte(fmt.Sprintf(format, values...)))
+	fmt.Fprintf(c.Writer, format, values...)
 }
 
 // 输出字符串
@@ -228,7 +229,7 @@ func (c *Context) String(code int, format string) {
 		c.SetHeader(HeaderContentType, "text/html;  charset=utf-8")
 	}
 
-	c.Writer.body.WriteString(format)
+	_, _ = c.Writer.WriteString(format)
 }
 
 func (c *Context) JSON(code int, obj any) {
@@ -257,22 +258,29 @@ func (c *Context) Data(code int, data []byte) {
 		c.SetHeader(HeaderContentType, "application/octet-stream")
 	}
 
-	c.Writer.Write(data)
+	_, _ = c.Writer.Write(data)
 }
 
 func (c *Context) File(code int, ffs fs.FS, filename string) {
+	f, e := ffs.Open(filename)
+	if e != nil && !errors.Is(e, fs.ErrNotExist) {
+		http.Error(c.Writer, e.Error(), http.StatusBadRequest)
+		return
+	} else if e != nil && errors.Is(e, fs.ErrNotExist) {
+		http.Error(c.Writer, e.Error(), http.StatusNotFound)
+	}
+
+	defer f.Close()
+
 	c.Status(code)
+
 	if c.Writer.Header().Get(HeaderContentType) == "" {
 		c.SetHeader(HeaderContentType, "text/html;  charset=utf-8")
 	}
 
-	b, e := fs.ReadFile(ffs, filename)
-	if e != nil {
-		http.Error(c.Writer, e.Error(), 500)
-		return
+	if _, e := io.Copy(c.Writer, f); e != nil {
+		http.Error(c.Writer, e.Error(), http.StatusBadRequest)
 	}
-
-	c.Writer.Write(b)
 }
 
 func (c *Context) WriteTo(w io.Writer) (int64, error) {
@@ -293,7 +301,7 @@ func (c *Context) Next() {
 	for c.index++; c.index > -1 && c.index < len(c.handlerList); c.index++ {
 		func() {
 			defer func() {
-				if r := recover(); r != nil || c.index == -100 {
+				if r := recover(); r != nil && c.index > -1 {
 					panic(r)
 				}
 			}()

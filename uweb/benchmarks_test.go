@@ -179,7 +179,7 @@ func timer(w func(s string) (int, error)) uweb.HandlerFunc {
 		// Process request
 		c.Next()
 
-		w(fmt.Sprintf("[%d] [%s] %s %s\r\n", c.Status(),
+		_, _ = w(fmt.Sprintf("[%d] [%s] %s %s\r\n", c.Status(),
 			c.Req.Method, c.Req.RequestURI, time.Since(t)))
 	}
 }

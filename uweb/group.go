@@ -72,9 +72,12 @@ func (g *Group) Options(part string, handler HandlerFunc) {
 }
 
 func (g *Group) Any(part string, handler HandlerFunc) {
-	methodList := []string{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
-	for i := 0; i < len(methodList); i++ {
-		g.Method(methodList[i], part, handler)
+	g.Split("GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS", part, handler)
+}
+
+func (g *Group) Split(methods, part string, handler HandlerFunc) {
+	for _, method := range strings.Split(methods, ",") {
+		g.Method(strings.TrimSpace(method), part, handler)
 	}
 }
 
