@@ -61,13 +61,16 @@ func (*BaseService) UserService() urest.Groupor {
 		ulog.Info("response fields: %v", fl)
 
 		return []*urest.Field{{
-			Name: "code",
+			Name: "业务状态码",
+			Key:  "code",
 			Type: urest.FieldTypeNumber,
 		}, {
-			Name: "message",
+			Name: "消息",
+			Key:  "message",
 			Type: urest.FieldTypeString,
 		}, {
-			Name:     "data",
+			Name:     "数据",
+			Key:      "data",
 			Type:     urest.FieldTypeAny,
 			Children: fl,
 		}}
@@ -103,7 +106,7 @@ type JsonExit[T any] struct {
 type GetReq struct {
 	Id    int64   `json:"id" key:"id" name:"编号"`
 	Limit int64   `json:"limit" key:"limit" name:"单页数量"`
-	Page  int64   `json:"page" key:"page" name:"页码"`
+	Page  int64   `json:"page" key:"page" default:"1" name:"页码"`
 	Sort  *string `json:"sort" key:"sort" default:"id" enum:"id:编号,date:日期" name:"排序字段"`
 	Data  *GetReqData
 }
@@ -149,13 +152,13 @@ func main() {
 		ulog.Printf("status: %d, url: %s, time: %s", c.Status(), c.Req.RequestURI, time.Since(v))
 	})
 
-	r.BindUweb(t.Group)
+	_ = r.BindUweb(t.Group)
 
 	t.Get("/api", func(c *uweb.Context) {
 		c.JSON(200, &JsonExit[any]{
 			Code:    0,
 			Message: "success",
-			Data:    r.Invoke()[0].HandlerField(),
+			Data:    r.GenerateDocs(),
 		})
 	})
 

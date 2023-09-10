@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"path"
+	"strings"
 
 	"uw/ulog"
 	"uw/uweb"
@@ -51,6 +52,37 @@ func (r *Rest) Invoke() []*Restot {
 	return r.restotList
 }
 
+type RestDocs struct {
+	List []*RestDocsHandler `json:"list"` // 接口列表
+}
+
+type RestDocsHandler struct {
+	Method  string        `json:"method"`  // 请求方法
+	Path    string        `json:"path"`    // 请求路径
+	Summary string        `json:"summary"` // 摘要
+	Detail  string        `json:"detail"`  // 详情
+	Tags    string        `json:"tags"`    // 标签
+	Field   *HandlerField `json:"field"`   // 请求参数
+}
+
+func (r *Rest) GenerateDocs() *RestDocs {
+	ret := &RestDocs{}
+	for i := 0; i < len(r.restotList); i++ {
+		m := r.restotList[i]
+
+		ret.List = append(ret.List, &RestDocsHandler{
+			Method:  m.Method(),
+			Path:    m.Path(),
+			Summary: m.Summary(),
+			Detail:  m.Detail(),
+			Tags:    strings.Join(m.Tags(), "-"),
+			Field:   m.HandlerField(),
+		})
+	}
+
+	return ret
+}
+
 func (r *Rest) BindUweb(u *uweb.Group) error {
 	for i := 0; i < len(r.restotList); i++ {
 		m := r.restotList[i]
@@ -85,6 +117,10 @@ func (rt *Restot) Path() string {
 
 func (rt *Restot) HandlerList() []Handler {
 	return rt.handlerList
+}
+
+func (rt *Restot) Tags() []string {
+	return rt.tags
 }
 
 func (rt *Restot) Summary() string {
