@@ -142,6 +142,8 @@ func computeDiagnosticHash(diags ...*source.Diagnostic) string {
 		for _, r := range d.Related {
 			fmt.Fprintf(h, "related: %s %s %s\n", r.Location.URI.SpanURI(), r.Message, r.Location.Range)
 		}
+		fmt.Fprintf(h, "code: %s\n", d.Code)
+		fmt.Fprintf(h, "codeHref: %s\n", d.CodeHref)
 		fmt.Fprintf(h, "message: %s\n", d.Message)
 		fmt.Fprintf(h, "range: %s\n", d.Range)
 		fmt.Fprintf(h, "severity: %s\n", d.Severity)
@@ -159,7 +161,7 @@ func (s *Server) diagnoseSnapshots(snapshots map[source.Snapshot][]span.URI, onD
 		diagnosticWG.Add(1)
 		go func(snapshot source.Snapshot, uris []span.URI) {
 			defer diagnosticWG.Done()
-			s.diagnoseSnapshot(snapshot, uris, onDisk, snapshot.View().Options().DiagnosticsDelay)
+			s.diagnoseSnapshot(snapshot, uris, onDisk, snapshot.Options().DiagnosticsDelay)
 		}(snapshot, uris)
 	}
 	diagnosticWG.Wait()
@@ -186,8 +188,26 @@ func (s *Server) diagnoseSnapshot(snapshot source.Snapshot, changedURIs []span.U
 		// file modifications.
 		//
 		// The second phase runs after the delay, and does everything.
+		//
+		// We wait a brief delay before the first phase, to allow higher priority
+		// work such as autocompletion to acquire the type checking mutex (though
+		// typically both diagnosing changed files and performing autocompletion
+		// will be doing the same work: recomputing active packages).
+		const minDelay = 20 * time.Millisecond
+		select {
+		case <-time.After(minDelay):
+		case <-ctx.Done():
+			return
+		}
+
 		s.diagnoseChangedFiles(ctx, snapshot, changedURIs, onDisk)
 		s.publishDiagnostics(ctx, false, snapshot)
+
+		if delay < minDelay {
+			delay = 0
+		} else {
+			delay -= minDelay
+		}
 
 		select {
 		case <-time.After(delay):
@@ -228,7 +248,7 @@ func (s *Server) diagnoseChangedFiles(ctx context.Context, snapshot source.Snaps
 		}
 
 		// Find all packages that include this file and diagnose them in parallel.
-		metas, err := snapshot.MetadataForFile(ctx, uri)
+		meta, err := source.NarrowestMetadataForFile(ctx, snapshot, uri)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -238,10 +258,7 @@ func (s *Server) diagnoseChangedFiles(ctx context.Context, snapshot source.Snaps
 			// noisy to log (and we'll handle things later in the slow pass).
 			continue
 		}
-		source.RemoveIntermediateTestVariants(&metas)
-		for _, m := range metas {
-			toDiagnose[m.ID] = m
-		}
+		toDiagnose[meta.ID] = meta
 	}
 	s.diagnosePkgs(ctx, snapshot, toDiagnose, nil)
 }
@@ -264,7 +281,7 @@ func (s *Server) diagnose(ctx context.Context, snapshot source.Snapshot, analyze
 	// Wait for a free diagnostics slot.
 	// TODO(adonovan): opt: shouldn't it be the analysis implementation's
 	// job to de-dup and limit resource consumption? In any case this
-	// this function spends most its time waiting for awaitLoaded, at
+	// function spends most its time waiting for awaitLoaded, at
 	// least initially.
 	select {
 	case <-ctx.Done():
@@ -449,7 +466,7 @@ func (s *Server) diagnosePkgs(ctx context.Context, snapshot source.Snapshot, toD
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		diags, err := source.Analyze(ctx, snapshot, toAnalyze, false)
+		diags, err := source.Analyze(ctx, snapshot, toAnalyze, s.progress)
 		if err != nil {
 			var tagStr string // sorted comma-separated list of package IDs
 			{
@@ -556,7 +573,7 @@ func (s *Server) diagnosePkgs(ctx context.Context, snapshot source.Snapshot, toD
 				fh := snapshot.FindFile(uri)
 				// Don't publish gc details for unsaved buffers, since the underlying
 				// logic operates on the file on disk.
-				if fh == nil || !fh.Saved() {
+				if fh == nil || !fh.SameContentsOnDisk() {
 					continue
 				}
 				s.storeDiagnostics(snapshot, uri, gcDetailsSource, diags, true)

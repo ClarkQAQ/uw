@@ -237,7 +237,10 @@ func (w *packetWriter) appendPingFrame() (added bool) {
 		return false
 	}
 	w.b = append(w.b, frameTypePing)
-	w.sent.appendAckElicitingFrame(frameTypePing)
+	// Mark this packet as ack-eliciting and in-flight,
+	// but there's no need to record the presence of a PING frame in it.
+	w.sent.ackEliciting = true
+	w.sent.inFlight = true
 	return true
 }
 
@@ -479,13 +482,14 @@ func (w *packetWriter) appendNewConnectionIDFrame(seq, retirePriorTo int64, conn
 	return true
 }
 
-func (w *packetWriter) appendRetireConnectionIDFrame(seq uint64) (added bool) {
-	if w.avail() < 1+sizeVarint(seq) {
+func (w *packetWriter) appendRetireConnectionIDFrame(seq int64) (added bool) {
+	if w.avail() < 1+sizeVarint(uint64(seq)) {
 		return false
 	}
 	w.b = append(w.b, frameTypeRetireConnectionID)
-	w.b = appendVarint(w.b, seq)
+	w.b = appendVarint(w.b, uint64(seq))
 	w.sent.appendAckElicitingFrame(frameTypeRetireConnectionID)
+	w.sent.appendInt(uint64(seq))
 	return true
 }
 

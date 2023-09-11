@@ -23,6 +23,7 @@ import (
 	"uw/pkg/x/tools/go/packages"
 	"uw/pkg/x/tools/go/types/objectpath"
 	"uw/pkg/x/tools/gopls/internal/govulncheck"
+	"uw/pkg/x/tools/gopls/internal/lsp/progress"
 	"uw/pkg/x/tools/gopls/internal/lsp/protocol"
 	"uw/pkg/x/tools/gopls/internal/lsp/safetoken"
 	"uw/pkg/x/tools/gopls/internal/lsp/source/methodsets"
@@ -56,6 +57,18 @@ type Snapshot interface {
 	// monotonic: subsequent snapshots will have higher global ID, though
 	// subsequent snapshots in a view may not have adjacent global IDs.
 	GlobalID() GlobalSnapshotID
+
+	// FileKind returns the type of a file.
+	//
+	// We can't reliably deduce the kind from the file name alone,
+	// as some editors can be told to interpret a buffer as
+	// language different from the file name heuristic, e.g. that
+	// an .html file actually contains Go "html/template" syntax,
+	// or even that a .go file contains Python.
+	FileKind(FileHandle) FileKind
+
+	// Options returns the options associated with this snapshot.
+	Options() *Options
 
 	// View returns the View associated with this snapshot.
 	View() View
@@ -93,7 +106,10 @@ type Snapshot interface {
 	ParseGo(ctx context.Context, fh FileHandle, mode parser.Mode) (*ParsedGoFile, error)
 
 	// Analyze runs the specified analyzers on the given packages at this snapshot.
-	Analyze(ctx context.Context, pkgIDs map[PackageID]unit, analyzers []*Analyzer) ([]*Diagnostic, error)
+	//
+	// If the provided tracker is non-nil, it may be used to report progress of
+	// the analysis pass.
+	Analyze(ctx context.Context, pkgIDs map[PackageID]unit, analyzers []*Analyzer, tracker *progress.Tracker) ([]*Diagnostic, error)
 
 	// RunGoCommandPiped runs the given `go` command, writing its output
 	// to stdout and stderr. Verb, Args, and WorkingDir must be specified.
@@ -349,9 +365,6 @@ type View interface {
 	// Folder returns the folder with which this view was created.
 	Folder() span.URI
 
-	// Options returns a copy of the Options for this view.
-	Options() *Options
-
 	// Snapshot returns the current snapshot for the view, and a
 	// release function that must be called when the Snapshot is
 	// no longer needed.
@@ -384,15 +397,6 @@ type View interface {
 	// required by modfile.
 	SetVulnerabilities(modfile span.URI, vulncheckResult *govulncheck.Result)
 
-	// FileKind returns the type of a file.
-	//
-	// We can't reliably deduce the kind from the file name alone,
-	// as some editors can be told to interpret a buffer as
-	// language different from the file name heuristic, e.g. that
-	// an .html file actually contains Go "html/template" syntax,
-	// or even that a .go file contains Python.
-	FileKind(FileHandle) FileKind
-
 	// GoVersion returns the configured Go version for this view.
 	GoVersion() int
 
@@ -405,6 +409,9 @@ type View interface {
 type FileSource interface {
 	// ReadFile returns the FileHandle for a given URI, either by
 	// reading the content of the file or by obtaining it from a cache.
+	//
+	// Invariant: ReadFile must only return an error in the case of context
+	// cancellation. If ctx.Err() is nil, the resulting error must also be nil.
 	ReadFile(ctx context.Context, uri span.URI) (FileHandle, error)
 }
 
@@ -545,7 +552,7 @@ type Metadata struct {
 	CompiledGoFiles []span.URI
 	IgnoredFiles    []span.URI
 
-	ForTest       PackagePath // package path under test, or ""
+	ForTest       PackagePath // q in a "p [q.test]" package, else ""
 	TypesSizes    types.Sizes
 	Errors        []packages.Error          // must be set for packages in import cycles
 	DepsByImpPath map[ImportPath]PackageID  // may contain dups; empty ID => missing
@@ -764,9 +771,9 @@ type FileHandle interface {
 	// FileIdentity returns a FileIdentity for the file, even if there was an
 	// error reading it.
 	FileIdentity() FileIdentity
-	// Saved reports whether the file has the same content on disk:
+	// SameContentsOnDisk reports whether the file has the same content on disk:
 	// it is false for files open on an editor with unsaved edits.
-	Saved() bool
+	SameContentsOnDisk() bool
 	// Version returns the file version, as defined by the LSP client.
 	// For on-disk file handles, Version returns 0.
 	Version() int32
@@ -875,6 +882,10 @@ type Analyzer struct {
 	// the analyzer's suggested fixes through a Command, not a TextEdit.
 	Fix string
 
+	// fixesDiagnostic reports if a diagnostic from the analyzer can be fixed by Fix.
+	// If nil then all diagnostics from the analyzer are assumed to be fixable.
+	fixesDiagnostic func(*Diagnostic) bool
+
 	// ActionKind is the kind of code action this analyzer produces. If
 	// unspecified the type defaults to quickfix.
 	ActionKind []protocol.CodeActionKind
@@ -882,6 +893,10 @@ type Analyzer struct {
 	// Severity is the severity set for diagnostics reported by this
 	// analyzer. If left unset it defaults to Warning.
 	Severity protocol.DiagnosticSeverity
+
+	// Tag is extra tags (unnecessary, deprecated, etc) for diagnostics
+	// reported by this analyzer.
+	Tag []protocol.DiagnosticTag
 }
 
 func (a *Analyzer) String() string { return a.Analyzer.String() }
@@ -898,6 +913,14 @@ func (a Analyzer) IsEnabled(options *Options) bool {
 		return enabled
 	}
 	return a.Enabled
+}
+
+// FixesDiagnostic returns true if Analyzer.Fix can fix the Diagnostic.
+func (a Analyzer) FixesDiagnostic(d *Diagnostic) bool {
+	if a.fixesDiagnostic == nil {
+		return true
+	}
+	return a.fixesDiagnostic(d)
 }
 
 // Declare explicit types for package paths, names, and IDs to ensure that we
@@ -929,13 +952,13 @@ type Package interface {
 	CompiledGoFiles() []*ParsedGoFile // (borrowed)
 	File(uri span.URI) (*ParsedGoFile, error)
 	GetSyntax() []*ast.File // (borrowed)
-	HasParseErrors() bool
+	GetParseErrors() []scanner.ErrorList
 
 	// Results of type checking:
 	GetTypes() *types.Package
+	GetTypeErrors() []types.Error
 	GetTypesInfo() *types.Info
 	DependencyTypes(PackagePath) *types.Package // nil for indirect dependency of no consequence
-	HasTypeErrors() bool
 	DiagnosticsForFile(ctx context.Context, s Snapshot, uri span.URI) ([]*Diagnostic, error)
 }
 

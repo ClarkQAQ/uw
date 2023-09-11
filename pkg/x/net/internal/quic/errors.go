@@ -10,7 +10,7 @@ import (
 	"fmt"
 )
 
-// A transportError is an transport error code from RFC 9000 Section 20.1.
+// A transportError is a transport error code from RFC 9000 Section 20.1.
 //
 // The transportError type doesn't implement the error interface to ensure we always
 // distinguish between errors sent to and received from the peer.
@@ -97,6 +97,14 @@ type peerTransportError struct {
 
 func (e peerTransportError) Error() string {
 	return fmt.Sprintf("peer closed connection: %v: %q", e.code, e.reason)
+}
+
+// A StreamErrorCode is an application protocol error code (RFC 9000, Section 20.2)
+// indicating whay a stream is being closed.
+type StreamErrorCode uint64
+
+func (e StreamErrorCode) Error() string {
+	return fmt.Sprintf("stream error code %v", uint64(e))
 }
 
 // An ApplicationError is an application protocol error code (RFC 9000, Section 20.2).

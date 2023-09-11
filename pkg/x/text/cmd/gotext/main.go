@@ -35,6 +35,10 @@ func init() {
 }
 
 var (
+	lang      *string
+	out       *string
+	overwrite *bool
+
 	srcLang = flag.String("srclang", "en-US", "the source-code language")
 	dir     = flag.String("dir", "locales", "default subdirectory to store translation files")
 )
@@ -49,6 +53,7 @@ func config() (*pipeline.Config, error) {
 		Supported:           getLangs(),
 		TranslationsPattern: `messages\.(.*)\.json$`,
 		GenFile:             *out,
+		Dir:                 *dir,
 	}, nil
 }
 
@@ -57,6 +62,9 @@ func config() (*pipeline.Config, error) {
 // A Command is an implementation of a go command
 // like go build or go fix.
 type Command struct {
+	// Init initializes the flag set of the command.
+	Init func(cmd *Command)
+
 	// Run runs the command.
 	// The args are the arguments after the command name.
 	Run func(cmd *Command, c *pipeline.Config, args []string) error
@@ -139,6 +147,7 @@ func main() {
 
 	for _, cmd := range commands {
 		if cmd.Name() == args[0] && cmd.Runnable() {
+			cmd.Init(cmd)
 			cmd.Flag.Usage = func() { cmd.Usage() }
 			cmd.Flag.Parse(args[1:])
 			args = cmd.Flag.Args()
@@ -331,6 +340,9 @@ func help(args []string) {
 }
 
 func getLangs() (tags []language.Tag) {
+	if lang == nil {
+		return []language.Tag{language.AmericanEnglish}
+	}
 	for _, t := range strings.Split(*lang, ",") {
 		if t == "" {
 			continue

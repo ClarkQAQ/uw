@@ -62,7 +62,7 @@ func Format(ctx context.Context, snapshot Snapshot, fh FileHandle) ([]protocol.T
 
 	// Apply additional formatting, if any is supported. Currently, the only
 	// supported additional formatter is gofumpt.
-	if format := snapshot.View().Options().GofumptFormat; snapshot.View().Options().Gofumpt && format != nil {
+	if format := snapshot.Options().GofumptFormat; snapshot.Options().Gofumpt && format != nil {
 		// gofumpt can customize formatting based on language version and module
 		// path, if available.
 		//
@@ -108,14 +108,10 @@ type ImportFix struct {
 // In addition to returning the result of applying all edits,
 // it returns a list of fixes that could be applied to the file, with the
 // corresponding TextEdits that would be needed to apply that fix.
-func AllImportsFixes(ctx context.Context, snapshot Snapshot, fh FileHandle) (allFixEdits []protocol.TextEdit, editsPerFix []*ImportFix, err error) {
+func AllImportsFixes(ctx context.Context, snapshot Snapshot, pgf *ParsedGoFile) (allFixEdits []protocol.TextEdit, editsPerFix []*ImportFix, err error) {
 	ctx, done := event.Start(ctx, "source.AllImportsFixes")
 	defer done()
 
-	pgf, err := snapshot.ParseGo(ctx, fh, ParseFull)
-	if err != nil {
-		return nil, nil, err
-	}
 	if err := snapshot.RunProcessEnvFunc(ctx, func(ctx context.Context, opts *imports.Options) error {
 		allFixEdits, editsPerFix, err = computeImportEdits(ctx, snapshot, pgf, opts)
 		return err
@@ -159,7 +155,7 @@ func computeImportEdits(ctx context.Context, snapshot Snapshot, pgf *ParsedGoFil
 // ComputeOneImportFixEdits returns text edits for a single import fix.
 func ComputeOneImportFixEdits(snapshot Snapshot, pgf *ParsedGoFile, fix *imports.ImportFix) ([]protocol.TextEdit, error) {
 	options := &imports.Options{
-		LocalPrefix: snapshot.View().Options().Local,
+		LocalPrefix: snapshot.Options().Local,
 		// Defaults.
 		AllErrors:  true,
 		Comments:   true,
@@ -198,7 +194,7 @@ func computeFixEdits(snapshot Snapshot, pgf *ParsedGoFile, options *imports.Opti
 	if fixedData == nil || fixedData[len(fixedData)-1] != '\n' {
 		fixedData = append(fixedData, '\n') // ApplyFixes may miss the newline, go figure.
 	}
-	edits := snapshot.View().Options().ComputeEdits(left, string(fixedData))
+	edits := snapshot.Options().ComputeEdits(left, string(fixedData))
 	return protocolEditsFromSource([]byte(left), edits)
 }
 
@@ -308,7 +304,7 @@ func computeTextEdits(ctx context.Context, snapshot Snapshot, pgf *ParsedGoFile,
 	_, done := event.Start(ctx, "source.computeTextEdits")
 	defer done()
 
-	edits := snapshot.View().Options().ComputeEdits(string(pgf.Src), formatted)
+	edits := snapshot.Options().ComputeEdits(string(pgf.Src), formatted)
 	return ToProtocolEdits(pgf.Mapper, edits)
 }
 

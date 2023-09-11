@@ -516,6 +516,7 @@ func main() {
 `
 	WithOptions(
 		WindowsLineEndings(),
+		Settings{"ui.completion.usePlaceholders": true},
 	).Run(t, src, func(t *testing.T, env *Env) {
 		// Trigger unimported completions for the mod.com package.
 		env.OpenFile("main.go")
@@ -536,6 +537,8 @@ func main() {
 }
 
 func TestUnimportedCompletionHasPlaceholders60269(t *testing.T) {
+	testenv.NeedsGo1Point(t, 18) // uses type params
+
 	// We can't express this as a marker test because it doesn't support AcceptCompletion.
 	const src = `
 -- go.mod --
@@ -552,18 +555,23 @@ package b
 
 func F0(a, b int, c float64) {}
 func F1(int, chan *string) {}
+func F2[K, V any](map[K]V, chan V) {} // missing type parameters was issue #60959
+func F3[K comparable, V any](map[K]V, chan V) {}
 `
 	WithOptions(
 		WindowsLineEndings(),
+		Settings{"ui.completion.usePlaceholders": true},
 	).Run(t, src, func(t *testing.T, env *Env) {
 		env.OpenFile("a/a.go")
 		env.Await(env.DoneWithOpen())
 
-		// The table lists the expected completions as they appear in Items.
+		// The table lists the expected completions of b.F as they appear in Items.
 		const common = "package a\r\n\r\nimport \"example.com/b\"\r\n\r\nvar _ = "
 		for i, want := range []string{
 			common + "b.F0(${1:a int}, ${2:b int}, ${3:c float64})\r\n",
 			common + "b.F1(${1:_ int}, ${2:_ chan *string})\r\n",
+			common + "b.F2[${1:K any}, ${2:V any}](${3:_ map[K]V}, ${4:_ chan V})\r\n",
+			common + "b.F3[${1:K comparable}, ${2:V any}](${3:_ map[K]V}, ${4:_ chan V})\r\n",
 		} {
 			loc := env.RegexpSearch("a/a.go", "b.F()")
 			completions := env.Completion(loc)

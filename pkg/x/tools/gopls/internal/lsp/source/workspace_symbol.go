@@ -7,7 +7,6 @@ package source
 import (
 	"context"
 	"fmt"
-	"go/types"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -314,12 +313,12 @@ func collectSymbols(ctx context.Context, views []View, matcherType SymbolMatcher
 		// whether a URI is in any open workspace.
 		roots = append(roots, strings.TrimRight(string(v.Folder()), "/"))
 
-		filters := v.Options().DirectoryFilters
+		filters := snapshot.Options().DirectoryFilters
 		filterer := NewFilterer(filters)
 		folder := filepath.ToSlash(v.Folder().Filename())
 
 		workspaceOnly := true
-		if v.Options().SymbolScope == AllSymbolScope {
+		if snapshot.Options().SymbolScope == AllSymbolScope {
 			workspaceOnly = false
 		}
 		symbols, err := snapshot.Symbols(ctx, workspaceOnly)
@@ -583,33 +582,6 @@ func (sc *symbolStore) results() []protocol.SymbolInformation {
 		res = append(res, si.asProtocolSymbolInformation())
 	}
 	return res
-}
-
-func typeToKind(typ types.Type) protocol.SymbolKind {
-	switch typ := typ.Underlying().(type) {
-	case *types.Interface:
-		return protocol.Interface
-	case *types.Struct:
-		return protocol.Struct
-	case *types.Signature:
-		if typ.Recv() != nil {
-			return protocol.Method
-		}
-		return protocol.Function
-	case *types.Named:
-		return typeToKind(typ.Underlying())
-	case *types.Basic:
-		i := typ.Info()
-		switch {
-		case i&types.IsNumeric != 0:
-			return protocol.Number
-		case i&types.IsBoolean != 0:
-			return protocol.Boolean
-		case i&types.IsString != 0:
-			return protocol.String
-		}
-	}
-	return protocol.Variable
 }
 
 // symbolInformation is a cut-down version of protocol.SymbolInformation that

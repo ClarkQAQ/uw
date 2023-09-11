@@ -51,10 +51,8 @@ func testLSP(t *testing.T, datum *tests.Data) {
 	// instrumentation.
 	ctx = debug.WithInstance(ctx, "", "off")
 
-	session := cache.NewSession(ctx, cache.New(nil), nil)
-	options := source.DefaultOptions().Clone()
-	tests.DefaultOptions(options)
-	session.SetOptions(options)
+	session := cache.NewSession(ctx, cache.New(nil))
+	options := source.DefaultOptions(tests.DefaultOptions)
 	options.SetEnvSlice(datum.Config.Env)
 	view, snapshot, release, err := session.NewView(ctx, datum.Config.Dir, span.URIFromPath(datum.Config.Dir), options)
 	if err != nil {
@@ -62,14 +60,6 @@ func testLSP(t *testing.T, datum *tests.Data) {
 	}
 
 	defer session.RemoveView(view)
-
-	// Enable type error analyses for tests.
-	// TODO(golang/go#38212): Delete this once they are enabled by default.
-	tests.EnableAllAnalyzers(options)
-	session.SetViewOptions(ctx, view, options)
-
-	// Enable all inlay hints for tests.
-	tests.EnableAllInlayHints(options)
 
 	// Only run the -modfile specific tests in module mode with Go 1.14 or above.
 	datum.ModfileFlagAvailable = len(snapshot.ModFiles()) > 0 && testenv.Go1Point() >= 14
@@ -116,13 +106,12 @@ func testLSP(t *testing.T, datum *tests.Data) {
 		t.Fatal(err)
 	}
 	r := &runner{
-		data:        datum,
-		ctx:         ctx,
-		normalizers: tests.CollectNormalizers(datum.Exported),
-		editRecv:    make(chan map[span.URI][]byte, 1),
+		data:     datum,
+		ctx:      ctx,
+		editRecv: make(chan map[span.URI][]byte, 1),
 	}
 
-	r.server = NewServer(session, testClient{runner: r})
+	r.server = NewServer(session, testClient{runner: r}, options)
 	tests.Run(t, r, datum)
 }
 
@@ -132,7 +121,6 @@ type runner struct {
 	data        *tests.Data
 	diagnostics map[span.URI][]*source.Diagnostic
 	ctx         context.Context
-	normalizers []tests.Normalizer
 	editRecv    chan map[span.URI][]byte
 }
 
@@ -205,7 +193,7 @@ func (r *runner) CallHierarchy(t *testing.T, spn span.Span, expectedCalls *tests
 	}
 	msg := tests.DiffCallHierarchyItems(incomingCallItems, expectedCalls.IncomingCalls)
 	if msg != "" {
-		t.Error(fmt.Sprintf("incoming calls: %s", msg))
+		t.Errorf("incoming calls: %s", msg)
 	}
 
 	outgoingCalls, err := r.server.OutgoingCalls(r.ctx, &protocol.CallHierarchyOutgoingCallsParams{Item: items[0]})
@@ -218,7 +206,7 @@ func (r *runner) CallHierarchy(t *testing.T, spn span.Span, expectedCalls *tests
 	}
 	msg = tests.DiffCallHierarchyItems(outgoingCallItems, expectedCalls.OutgoingCalls)
 	if msg != "" {
-		t.Error(fmt.Sprintf("outgoing calls: %s", msg))
+		t.Errorf("outgoing calls: %s", msg)
 	}
 }
 
@@ -244,145 +232,6 @@ func (r *runner) Diagnostics(t *testing.T, uri span.URI, want []*source.Diagnost
 	v := r.server.session.ViewByName(r.data.Config.Dir)
 	r.collectDiagnostics(v)
 	tests.CompareDiagnostics(t, uri, want, r.diagnostics[uri])
-}
-
-func (r *runner) FoldingRanges(t *testing.T, spn span.Span) {
-	uri := spn.URI()
-	view, err := r.server.session.ViewOf(uri)
-	if err != nil {
-		t.Fatal(err)
-	}
-	original := view.Options()
-	modified := original
-	defer r.server.session.SetViewOptions(r.ctx, view, original)
-
-	for _, test := range []struct {
-		lineFoldingOnly bool
-		prefix          string
-	}{
-		{false, "foldingRange"},
-		{true, "foldingRange-lineFolding"},
-	} {
-		modified.LineFoldingOnly = test.lineFoldingOnly
-		view, err = r.server.session.SetViewOptions(r.ctx, view, modified)
-		if err != nil {
-			t.Error(err)
-			continue
-		}
-		ranges, err := r.server.FoldingRange(r.ctx, &protocol.FoldingRangeParams{
-			TextDocument: protocol.TextDocumentIdentifier{
-				URI: protocol.URIFromSpanURI(uri),
-			},
-		})
-		if err != nil {
-			t.Error(err)
-			continue
-		}
-		r.foldingRanges(t, test.prefix, uri, ranges)
-	}
-}
-
-func (r *runner) foldingRanges(t *testing.T, prefix string, uri span.URI, ranges []protocol.FoldingRange) {
-	m, err := r.data.Mapper(uri)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Fold all ranges.
-	nonOverlapping := nonOverlappingRanges(ranges)
-	for i, rngs := range nonOverlapping {
-		got, err := foldRanges(m, string(m.Content), rngs)
-		if err != nil {
-			t.Error(err)
-			continue
-		}
-		tag := fmt.Sprintf("%s-%d", prefix, i)
-		want := string(r.data.Golden(t, tag, uri.Filename(), func() ([]byte, error) {
-			return []byte(got), nil
-		}))
-
-		if want != got {
-			t.Errorf("%s: foldingRanges failed for %s, expected:\n%v\ngot:\n%v", tag, uri.Filename(), want, got)
-		}
-	}
-
-	// Filter by kind.
-	kinds := []protocol.FoldingRangeKind{protocol.Imports, protocol.Comment}
-	for _, kind := range kinds {
-		var kindOnly []protocol.FoldingRange
-		for _, fRng := range ranges {
-			if fRng.Kind == string(kind) {
-				kindOnly = append(kindOnly, fRng)
-			}
-		}
-
-		nonOverlapping := nonOverlappingRanges(kindOnly)
-		for i, rngs := range nonOverlapping {
-			got, err := foldRanges(m, string(m.Content), rngs)
-			if err != nil {
-				t.Error(err)
-				continue
-			}
-			tag := fmt.Sprintf("%s-%s-%d", prefix, kind, i)
-			want := string(r.data.Golden(t, tag, uri.Filename(), func() ([]byte, error) {
-				return []byte(got), nil
-			}))
-
-			if want != got {
-				t.Errorf("%s: foldingRanges failed for %s, expected:\n%v\ngot:\n%v", tag, uri.Filename(), want, got)
-			}
-		}
-
-	}
-}
-
-func nonOverlappingRanges(ranges []protocol.FoldingRange) (res [][]protocol.FoldingRange) {
-	for _, fRng := range ranges {
-		setNum := len(res)
-		for i := 0; i < len(res); i++ {
-			canInsert := true
-			for _, rng := range res[i] {
-				if conflict(rng, fRng) {
-					canInsert = false
-					break
-				}
-			}
-			if canInsert {
-				setNum = i
-				break
-			}
-		}
-		if setNum == len(res) {
-			res = append(res, []protocol.FoldingRange{})
-		}
-		res[setNum] = append(res[setNum], fRng)
-	}
-	return res
-}
-
-func conflict(a, b protocol.FoldingRange) bool {
-	// a start position is <= b start positions
-	return (a.StartLine < b.StartLine || (a.StartLine == b.StartLine && a.StartCharacter <= b.StartCharacter)) &&
-		(a.EndLine > b.StartLine || (a.EndLine == b.StartLine && a.EndCharacter > b.StartCharacter))
-}
-
-func foldRanges(m *protocol.Mapper, contents string, ranges []protocol.FoldingRange) (string, error) {
-	foldedText := "<>"
-	res := contents
-	// Apply the edits from the end of the file forward
-	// to preserve the offsets
-	// TODO(adonovan): factor to use diff.ApplyEdits, which validates the input.
-	for i := len(ranges) - 1; i >= 0; i-- {
-		r := ranges[i]
-		start, end, err := m.RangeOffsets(protocol.Range{
-			Start: protocol.Position{Line: r.StartLine, Character: r.StartCharacter},
-			End:   protocol.Position{Line: r.EndLine, Character: r.EndCharacter},
-		})
-		if err != nil {
-			return "", err
-		}
-		res = res[:start] + foldedText + res[end:]
-	}
-	return res, nil
 }
 
 func (r *runner) SemanticTokens(t *testing.T, spn span.Span) {

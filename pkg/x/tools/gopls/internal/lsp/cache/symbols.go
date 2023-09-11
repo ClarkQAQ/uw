@@ -15,7 +15,6 @@ import (
 	"uw/pkg/x/tools/gopls/internal/lsp/protocol"
 	"uw/pkg/x/tools/gopls/internal/lsp/source"
 	"uw/pkg/x/tools/gopls/internal/span"
-	"uw/pkg/x/tools/internal/memoize"
 )
 
 // symbolize returns the result of symbolizing the file identified by uri, using a cache.
@@ -51,7 +50,7 @@ func (s *snapshot) symbolize(ctx context.Context, uri span.URI) ([]source.Symbol
 	}
 
 	// Await result.
-	v, err := s.awaitPromise(ctx, entry.(*memoize.Promise))
+	v, err := s.awaitPromise(ctx, entry)
 	if err != nil {
 		return nil, err
 	}
@@ -60,10 +59,8 @@ func (s *snapshot) symbolize(ctx context.Context, uri span.URI) ([]source.Symbol
 }
 
 // symbolizeImpl reads and parses a file and extracts symbols from it.
-// It may use a parsed file already present in the cache but
-// otherwise does not populate the cache.
 func symbolizeImpl(ctx context.Context, snapshot *snapshot, fh source.FileHandle) ([]source.Symbol, error) {
-	pgfs, err := snapshot.parseCache.parseFiles(ctx, token.NewFileSet(), source.ParseFull, fh)
+	pgfs, err := snapshot.view.parseCache.parseFiles(ctx, token.NewFileSet(), source.ParseFull, false, fh)
 	if err != nil {
 		return nil, err
 	}

@@ -91,7 +91,7 @@ func parseLongHeaderPacket(pkt []byte, k keys, pnumMax packetNumber) (p longPack
 	pnumOff := len(pkt) - len(b)
 	pkt = pkt[:pnumOff+int(payLen)]
 
-	if k.initialized() {
+	if k.isSet() {
 		var err error
 		p.payload, p.num, err = k.unprotect(pkt, pnumOff, pnumMax)
 		if err != nil {
@@ -162,7 +162,7 @@ func parse1RTTPacket(pkt []byte, k keys, dstConnIDLen int, pnumMax packetNumber)
 // which includes both general parse failures and specific violations of frame
 // constraints.
 
-func consumeAckFrame(frame []byte, f func(start, end packetNumber)) (largest packetNumber, ackDelay unscaledAckDelay, n int) {
+func consumeAckFrame(frame []byte, f func(rangeIndex int, start, end packetNumber)) (largest packetNumber, ackDelay unscaledAckDelay, n int) {
 	b := frame[1:] // type
 
 	largestAck, n := consumeVarint(b)
@@ -195,7 +195,7 @@ func consumeAckFrame(frame []byte, f func(start, end packetNumber)) (largest pac
 		if rangeMin < 0 || rangeMin > rangeMax {
 			return 0, 0, -1
 		}
-		f(rangeMin, rangeMax+1)
+		f(int(i), rangeMin, rangeMax+1)
 
 		if i == ackRangeCount {
 			break
@@ -330,6 +330,9 @@ func consumeStreamFrame(b []byte) (id streamID, off int64, fin bool, data []byte
 		data = b[n:]
 		n += len(data)
 	}
+	if off+int64(len(data)) >= 1<<62 {
+		return 0, 0, false, nil, -1
+	}
 	return streamID(idInt), off, fin, data, n
 }
 
@@ -375,7 +378,7 @@ func consumeMaxStreamsFrame(b []byte) (typ streamType, max int64, n int) {
 		return 0, 0, -1
 	}
 	n += nn
-	if v > 1<<60 {
+	if v > maxStreamsLimit {
 		return 0, 0, -1
 	}
 	return typ, int64(v), n
@@ -454,10 +457,10 @@ func consumeNewConnectionIDFrame(b []byte) (seq, retire int64, connID []byte, re
 	return seq, retire, connID, resetToken, n
 }
 
-func consumeRetireConnectionIDFrame(b []byte) (seq uint64, n int) {
+func consumeRetireConnectionIDFrame(b []byte) (seq int64, n int) {
 	n = 1
 	var nn int
-	seq, nn = consumeVarint(b[n:])
+	seq, nn = consumeVarintInt64(b[n:])
 	if nn < 0 {
 		return 0, -1
 	}

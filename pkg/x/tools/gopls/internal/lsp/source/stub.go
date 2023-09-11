@@ -22,6 +22,7 @@ import (
 	"uw/pkg/x/tools/gopls/internal/lsp/analysis/stubmethods"
 	"uw/pkg/x/tools/gopls/internal/lsp/protocol"
 	"uw/pkg/x/tools/gopls/internal/lsp/safetoken"
+	"uw/pkg/x/tools/internal/diff"
 	"uw/pkg/x/tools/internal/tokeninternal"
 	"uw/pkg/x/tools/internal/typeparams"
 )
@@ -125,6 +126,12 @@ func stub(ctx context.Context, snapshot Snapshot, si *stubmethods.StubInfo) (*to
 	var newImports []newImport // for AddNamedImport
 	qual := func(pkg *types.Package) string {
 		// TODO(adonovan): don't ignore vendor prefix.
+		//
+		// Ignore the current package import.
+		if pkg.Path() == conc.Pkg().Path() {
+			return ""
+		}
+
 		importPath := ImportPath(pkg.Path())
 		name, ok := importEnv[importPath]
 		if !ok {
@@ -224,16 +231,20 @@ func (%s%s%s) %s%s {
 	}
 
 	// Report the diff.
-	diffs := snapshot.View().Options().ComputeEdits(string(input), output.String())
-	var edits []analysis.TextEdit
+	diffs := snapshot.Options().ComputeEdits(string(input), output.String())
+	return tokeninternal.FileSetFor(declPGF.Tok), // edits use declPGF.Tok
+		&analysis.SuggestedFix{TextEdits: diffToTextEdits(declPGF.Tok, diffs)},
+		nil
+}
+
+func diffToTextEdits(tok *token.File, diffs []diff.Edit) []analysis.TextEdit {
+	edits := make([]analysis.TextEdit, 0, len(diffs))
 	for _, edit := range diffs {
 		edits = append(edits, analysis.TextEdit{
-			Pos:     declPGF.Tok.Pos(edit.Start),
-			End:     declPGF.Tok.Pos(edit.End),
+			Pos:     tok.Pos(edit.Start),
+			End:     tok.Pos(edit.End),
 			NewText: []byte(edit.New),
 		})
 	}
-	return tokeninternal.FileSetFor(declPGF.Tok), // edits use declPGF.Tok
-		&analysis.SuggestedFix{TextEdits: edits},
-		nil
+	return edits
 }

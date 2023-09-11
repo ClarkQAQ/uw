@@ -955,3 +955,215 @@ func TestAuthMethodGSSAPIWithMIC(t *testing.T) {
 		}
 	}
 }
+
+func TestCompatibleAlgoAndSignatures(t *testing.T) {
+	type testcase struct {
+		algo       string
+		sigFormat  string
+		compatible bool
+	}
+	testcases := []*testcase{
+		{
+			KeyAlgoRSA,
+			KeyAlgoRSA,
+			true,
+		},
+		{
+			KeyAlgoRSA,
+			KeyAlgoRSASHA256,
+			true,
+		},
+		{
+			KeyAlgoRSA,
+			KeyAlgoRSASHA512,
+			true,
+		},
+		{
+			KeyAlgoRSASHA256,
+			KeyAlgoRSA,
+			true,
+		},
+		{
+			KeyAlgoRSASHA512,
+			KeyAlgoRSA,
+			true,
+		},
+		{
+			KeyAlgoRSASHA512,
+			KeyAlgoRSASHA256,
+			true,
+		},
+		{
+			KeyAlgoRSASHA256,
+			KeyAlgoRSASHA512,
+			true,
+		},
+		{
+			KeyAlgoRSASHA512,
+			KeyAlgoRSASHA512,
+			true,
+		},
+		{
+			CertAlgoRSAv01,
+			KeyAlgoRSA,
+			true,
+		},
+		{
+			CertAlgoRSAv01,
+			KeyAlgoRSASHA256,
+			true,
+		},
+		{
+			CertAlgoRSAv01,
+			KeyAlgoRSASHA512,
+			true,
+		},
+		{
+			CertAlgoRSASHA256v01,
+			KeyAlgoRSASHA512,
+			true,
+		},
+		{
+			CertAlgoRSASHA512v01,
+			KeyAlgoRSASHA512,
+			true,
+		},
+		{
+			CertAlgoRSASHA512v01,
+			KeyAlgoRSASHA256,
+			true,
+		},
+		{
+			CertAlgoRSASHA256v01,
+			CertAlgoRSAv01,
+			true,
+		},
+		{
+			CertAlgoRSAv01,
+			CertAlgoRSASHA512v01,
+			true,
+		},
+		{
+			KeyAlgoECDSA256,
+			KeyAlgoRSA,
+			false,
+		},
+		{
+			KeyAlgoECDSA256,
+			KeyAlgoECDSA521,
+			false,
+		},
+		{
+			KeyAlgoECDSA256,
+			KeyAlgoECDSA256,
+			true,
+		},
+		{
+			KeyAlgoECDSA256,
+			KeyAlgoED25519,
+			false,
+		},
+		{
+			KeyAlgoED25519,
+			KeyAlgoED25519,
+			true,
+		},
+	}
+
+	for _, c := range testcases {
+		if isAlgoCompatible(c.algo, c.sigFormat) != c.compatible {
+			t.Errorf("algorithm %q, signature format %q, expected compatible to be %t", c.algo, c.sigFormat, c.compatible)
+		}
+	}
+}
+
+// configurablePublicKeyCallback is a public key callback that allows to
+// configure the signature algorithm and format. This way we can emulate the
+// behavior of buggy clients.
+type configurablePublicKeyCallback struct {
+	signer          AlgorithmSigner
+	signatureAlgo   string
+	signatureFormat string
+}
+
+func (cb configurablePublicKeyCallback) method() string {
+	return "publickey"
+}
+
+func (cb configurablePublicKeyCallback) auth(session []byte, user string, c packetConn, rand io.Reader, extensions map[string][]byte) (authResult, []string, error) {
+	pub := cb.signer.PublicKey()
+
+	ok, err := validateKey(pub, cb.signatureAlgo, user, c)
+	if err != nil {
+		return authFailure, nil, err
+	}
+	if !ok {
+		return authFailure, nil, fmt.Errorf("invalid public key")
+	}
+
+	pubKey := pub.Marshal()
+	data := buildDataSignedForAuth(session, userAuthRequestMsg{
+		User:    user,
+		Service: serviceSSH,
+		Method:  cb.method(),
+	}, cb.signatureAlgo, pubKey)
+	sign, err := cb.signer.SignWithAlgorithm(rand, data, underlyingAlgo(cb.signatureFormat))
+	if err != nil {
+		return authFailure, nil, err
+	}
+
+	s := Marshal(sign)
+	sig := make([]byte, stringLength(len(s)))
+	marshalString(sig, s)
+	msg := publickeyAuthMsg{
+		User:     user,
+		Service:  serviceSSH,
+		Method:   cb.method(),
+		HasSig:   true,
+		Algoname: cb.signatureAlgo,
+		PubKey:   pubKey,
+		Sig:      sig,
+	}
+	p := Marshal(&msg)
+	if err := c.writePacket(p); err != nil {
+		return authFailure, nil, err
+	}
+	var success authResult
+	success, methods, err := handleAuthResponse(c)
+	if err != nil {
+		return authFailure, nil, err
+	}
+	if success == authSuccess || !containsMethod(methods, cb.method()) {
+		return success, methods, err
+	}
+
+	return authFailure, methods, nil
+}
+
+func TestPublicKeyAndAlgoCompatibility(t *testing.T) {
+	cert := &Certificate{
+		Key:         testPublicKeys["rsa"],
+		ValidBefore: CertTimeInfinity,
+		CertType:    UserCert,
+	}
+	cert.SignCert(rand.Reader, testSigners["ecdsa"])
+	certSigner, err := NewCertSigner(cert, testSigners["rsa"])
+	if err != nil {
+		t.Fatalf("NewCertSigner: %v", err)
+	}
+
+	clientConfig := &ClientConfig{
+		User:            "user",
+		HostKeyCallback: InsecureIgnoreHostKey(),
+		Auth: []AuthMethod{
+			configurablePublicKeyCallback{
+				signer:          certSigner.(AlgorithmSigner),
+				signatureAlgo:   KeyAlgoRSASHA256,
+				signatureFormat: KeyAlgoRSASHA256,
+			},
+		},
+	}
+	if err := tryAuth(t, clientConfig); err == nil {
+		t.Error("cert login passed with incompatible public key type and algorithm")
+	}
+}

@@ -23,6 +23,7 @@ import (
 	"uw/pkg/x/tools/gopls/internal/astutil"
 	"uw/pkg/x/tools/gopls/internal/lsp/cache"
 	"uw/pkg/x/tools/gopls/internal/lsp/source"
+	"uw/pkg/x/tools/gopls/internal/lsp/source/typerefs"
 	"uw/pkg/x/tools/gopls/internal/span"
 	"uw/pkg/x/tools/internal/packagesinternal"
 	"uw/pkg/x/tools/internal/testenv"
@@ -146,8 +147,8 @@ func TestBuildPackageGraph(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pkg.ReachesByDeps.Elems(func(id2 PackageID) {
-			recordEdge(id, id2, reaches, reachedBy)
+		pkg.ReachesByDeps.Elems(func(id2 typerefs.IndexID) {
+			recordEdge(id, g.pkgIndex.PackageID(id2), reaches, reachedBy)
 		})
 
 		importMap := importMap(id, meta)
@@ -294,7 +295,7 @@ func (p *memoizedParser) parse(ctx context.Context, uri span.URI) (*ParsedGoFile
 			return nil, err
 		}
 		content = astutil.PurgeFuncBodies(content)
-		pgf, _ := cache.ParseGoSrc(ctx, token.NewFileSet(), uri, content, source.ParseFull)
+		pgf, _ := cache.ParseGoSrc(ctx, token.NewFileSet(), uri, content, source.ParseFull, false)
 		return pgf, nil
 	}
 

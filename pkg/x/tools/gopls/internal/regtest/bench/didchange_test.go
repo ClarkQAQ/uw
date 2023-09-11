@@ -20,18 +20,20 @@ import (
 var editID int64 = time.Now().UnixNano()
 
 type changeTest struct {
-	repo string
-	file string
+	repo    string
+	file    string
+	canSave bool
 }
 
 var didChangeTests = []changeTest{
-	{"google-cloud-go", "internal/annotate.go"},
-	{"istio", "pkg/fuzz/util.go"},
-	{"kubernetes", "pkg/controller/lookup_cache.go"},
-	{"kuma", "api/generic/insights.go"},
-	{"pkgsite", "internal/frontend/server.go"},
-	{"starlark", "starlark/eval.go"},
-	{"tools", "internal/lsp/cache/snapshot.go"},
+	{"google-cloud-go", "internal/annotate.go", true},
+	{"istio", "pkg/fuzz/util.go", true},
+	{"kubernetes", "pkg/controller/lookup_cache.go", true},
+	{"kuma", "api/generic/insights.go", true},
+	{"oracle", "dataintegration/data_type.go", false}, // diagnoseSave fails because this package is generated
+	{"pkgsite", "internal/frontend/server.go", true},
+	{"starlark", "starlark/eval.go", true},
+	{"tools", "internal/lsp/cache/snapshot.go", true},
 }
 
 // BenchmarkDidChange benchmarks modifications of a single file by making
@@ -43,10 +45,16 @@ func BenchmarkDidChange(b *testing.B) {
 		b.Run(test.repo, func(b *testing.B) {
 			env := getRepo(b, test.repo).sharedEnv(b)
 			env.OpenFile(test.file)
+			defer closeBuffer(b, env, test.file)
+
 			// Insert the text we'll be modifying at the top of the file.
 			env.EditBuffer(test.file, protocol.TextEdit{NewText: "// __REGTEST_PLACEHOLDER_0__\n"})
 			env.AfterChange()
 			b.ResetTimer()
+
+			if stopAndRecord := startProfileIfSupported(b, env, qualifiedName(test.repo, "didchange")); stopAndRecord != nil {
+				defer stopAndRecord()
+			}
 
 			for i := 0; i < b.N; i++ {
 				edits := atomic.AddInt64(&editID, 1)
@@ -66,7 +74,7 @@ func BenchmarkDidChange(b *testing.B) {
 
 func BenchmarkDiagnoseChange(b *testing.B) {
 	for _, test := range didChangeTests {
-		runChangeDiagnosticsBenchmark(b, test, false)
+		runChangeDiagnosticsBenchmark(b, test, false, "diagnoseChange")
 	}
 }
 
@@ -74,14 +82,17 @@ func BenchmarkDiagnoseChange(b *testing.B) {
 // this matters.
 func BenchmarkDiagnoseSave(b *testing.B) {
 	for _, test := range didChangeTests {
-		runChangeDiagnosticsBenchmark(b, test, true)
+		runChangeDiagnosticsBenchmark(b, test, true, "diagnoseSave")
 	}
 }
 
 // runChangeDiagnosticsBenchmark runs a benchmark to edit the test file and
 // await the resulting diagnostics pass. If save is set, the file is also saved.
-func runChangeDiagnosticsBenchmark(b *testing.B, test changeTest, save bool) {
+func runChangeDiagnosticsBenchmark(b *testing.B, test changeTest, save bool, operation string) {
 	b.Run(test.repo, func(b *testing.B) {
+		if !test.canSave {
+			b.Skipf("skipping as %s cannot be saved", test.file)
+		}
 		sharedEnv := getRepo(b, test.repo).sharedEnv(b)
 		config := fake.EditorConfig{
 			Env: map[string]string{
@@ -93,7 +104,7 @@ func runChangeDiagnosticsBenchmark(b *testing.B, test changeTest, save bool) {
 		}
 		// Use a new env to avoid the diagnostic delay: we want to measure how
 		// long it takes to produce the diagnostics.
-		env := getRepo(b, test.repo).newEnv(b, "diagnoseSave", config)
+		env := getRepo(b, test.repo).newEnv(b, config, operation, false)
 		defer env.Close()
 		env.OpenFile(test.file)
 		// Insert the text we'll be modifying at the top of the file.
@@ -108,6 +119,9 @@ func runChangeDiagnosticsBenchmark(b *testing.B, test changeTest, save bool) {
 		// shared env once (otherwise we pay additional overhead and the profiling
 		// flags don't work).
 		b.Run("diagnose", func(b *testing.B) {
+			if stopAndRecord := startProfileIfSupported(b, env, qualifiedName(test.repo, operation)); stopAndRecord != nil {
+				defer stopAndRecord()
+			}
 			for i := 0; i < b.N; i++ {
 				edits := atomic.AddInt64(&editID, 1)
 				env.EditBuffer(test.file, protocol.TextEdit{

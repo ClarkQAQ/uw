@@ -9,8 +9,8 @@ import (
 	"reflect"
 	"strconv"
 	"sync/atomic"
+	"time"
 
-	"uw/pkg/x/tools/gopls/internal/lsp/source"
 	"uw/pkg/x/tools/internal/event"
 	"uw/pkg/x/tools/internal/gocommand"
 	"uw/pkg/x/tools/internal/memoize"
@@ -55,18 +55,14 @@ type Cache struct {
 // The provided optionsOverrides may be nil.
 //
 // TODO(rfindley): move this to session.go.
-func NewSession(ctx context.Context, c *Cache, optionsOverrides func(*source.Options)) *Session {
+func NewSession(ctx context.Context, c *Cache) *Session {
 	index := atomic.AddInt64(&sessionIndex, 1)
-	options := source.DefaultOptions().Clone()
-	if optionsOverrides != nil {
-		optionsOverrides(options)
-	}
 	s := &Session{
 		id:          strconv.FormatInt(index, 10),
 		cache:       c,
 		gocmdRunner: &gocommand.Runner{},
-		options:     options,
 		overlayFS:   newOverlayFS(c),
+		parseCache:  newParseCache(1 * time.Minute), // keep recently parsed files for a minute, to optimize typing CPU
 	}
 	event.Log(ctx, "New session", KeyCreateSession.Of(s))
 	return s

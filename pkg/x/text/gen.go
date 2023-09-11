@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+
 	"uw/pkg/x/text/collate"
 	"uw/pkg/x/text/internal/gen"
 	"uw/pkg/x/text/language"
@@ -93,7 +94,7 @@ pkg unicode, var <new script or property> *RangeTable
 		)
 	}
 
-	unicode := &dependency{}
+	var unicode = &dependency{}
 	if updateCore {
 		fmt.Printf("Updating core to version %s...\n", gen.UnicodeVersion())
 		unicodeInternal := generate("./internal/export/unicode")

@@ -18,17 +18,22 @@ import (
 	"go/token"
 	"go/types"
 	"log"
+	urlpkg "net/url"
 	"reflect"
+	"runtime"
 	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"uw/pkg/x/sync/errgroup"
 	"uw/pkg/x/tools/go/analysis"
 	"uw/pkg/x/tools/gopls/internal/bug"
 	"uw/pkg/x/tools/gopls/internal/lsp/filecache"
+	"uw/pkg/x/tools/gopls/internal/lsp/frob"
+	"uw/pkg/x/tools/gopls/internal/lsp/progress"
 	"uw/pkg/x/tools/gopls/internal/lsp/protocol"
 	"uw/pkg/x/tools/gopls/internal/lsp/source"
 	"uw/pkg/x/tools/internal/event"
@@ -151,14 +156,23 @@ import (
 //        View() *View // for Options
 //   - share cache.{goVersionRx,parseGoImpl}
 
+// AnalysisProgressTitle is the title of the progress report for ongoing
+// analysis. It is sought by regression tests for the progress reporting
+// feature.
+const AnalysisProgressTitle = "Analyzing Dependencies"
+
 // Analyze applies a set of analyzers to the package denoted by id,
 // and returns their diagnostics for that package.
 //
 // The analyzers list must be duplicate free; order does not matter.
 //
+// Notifications of progress may be sent to the optional reporter.
+//
 // Precondition: all analyzers within the process have distinct names.
 // (The names are relied on by the serialization logic.)
-func (snapshot *snapshot) Analyze(ctx context.Context, pkgs map[PackageID]unit, analyzers []*source.Analyzer) ([]*source.Diagnostic, error) {
+func (snapshot *snapshot) Analyze(ctx context.Context, pkgs map[PackageID]unit, analyzers []*source.Analyzer, reporter *progress.Tracker) ([]*source.Diagnostic, error) {
+	start := time.Now() // for progress reporting
+
 	var tagStr string // sorted comma-separated list of PackageIDs
 	{
 		// TODO(adonovan): replace with a generic map[S]any -> string
@@ -178,7 +192,7 @@ func (snapshot *snapshot) Analyze(ctx context.Context, pkgs map[PackageID]unit, 
 	toSrc := make(map[*analysis.Analyzer]*source.Analyzer)
 	var enabled []*analysis.Analyzer // enabled subset + transitive requirements
 	for _, a := range analyzers {
-		if a.IsEnabled(snapshot.view.Options()) {
+		if a.IsEnabled(snapshot.options) {
 			toSrc[a.Analyzer] = a
 			enabled = append(enabled, a.Analyzer)
 		}
@@ -274,9 +288,10 @@ func (snapshot *snapshot) Analyze(ctx context.Context, pkgs map[PackageID]unit, 
 		}
 		// Add edge from predecessor.
 		if from != nil {
-			atomic.AddInt32(&from.count, 1) // TODO(adonovan): use generics
+			atomic.AddInt32(&from.unfinishedSuccs, 1) // TODO(adonovan): use generics
 			an.preds = append(an.preds, from)
 		}
+		atomic.AddInt32(&an.unfinishedPreds, 1)
 		return an, nil
 	}
 
@@ -293,29 +308,99 @@ func (snapshot *snapshot) Analyze(ctx context.Context, pkgs map[PackageID]unit, 
 
 	// Now that we have read all files,
 	// we no longer need the snapshot.
+	// (but options are needed for progress reporting)
+	options := snapshot.options
 	snapshot = nil
+
+	// Progress reporting. If supported, gopls reports progress on analysis
+	// passes that are taking a long time.
+	maybeReport := func(completed int64) {}
+
+	// Enable progress reporting if enabled by the user
+	// and we have a capable reporter.
+	if reporter != nil && reporter.SupportsWorkDoneProgress() && options.AnalysisProgressReporting {
+		var reportAfter = options.ReportAnalysisProgressAfter // tests may set this to 0
+		const reportEvery = 1 * time.Second
+
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
+		var (
+			reportMu   sync.Mutex
+			lastReport time.Time
+			wd         *progress.WorkDone
+		)
+		defer func() {
+			reportMu.Lock()
+			defer reportMu.Unlock()
+
+			if wd != nil {
+				wd.End(ctx, "Done.") // ensure that the progress report exits
+			}
+		}()
+		maybeReport = func(completed int64) {
+			now := time.Now()
+			if now.Sub(start) < reportAfter {
+				return
+			}
+
+			reportMu.Lock()
+			defer reportMu.Unlock()
+
+			if wd == nil {
+				wd = reporter.Start(ctx, AnalysisProgressTitle, "", nil, cancel)
+			}
+
+			if now.Sub(lastReport) > reportEvery {
+				lastReport = now
+				// Trailing space is intentional: some LSP clients strip newlines.
+				msg := fmt.Sprintf(`Indexed %d/%d packages. (Set "analysisProgressReporting" to false to disable notifications.)`,
+					completed, len(nodes))
+				pct := 100 * float64(completed) / float64(len(nodes))
+				wd.Report(ctx, msg, pct)
+			}
+		}
+	}
 
 	// Execute phase: run leaves first, adding
 	// new nodes to the queue as they become leaves.
 	var g errgroup.Group
-	// Avoid g.SetLimit here: it makes g.Go stop accepting work,
-	// which prevents workers from enqeuing, and thus finishing,
-	// and thus allowing the group to make progress: deadlock.
-	var enqueue func(it *analysisNode)
+
+	// Analysis is CPU-bound.
+	//
+	// Note: avoid g.SetLimit here: it makes g.Go stop accepting work, which
+	// prevents workers from enqeuing, and thus finishing, and thus allowing the
+	// group to make progress: deadlock.
+	limiter := make(chan unit, runtime.GOMAXPROCS(0))
+	var completed int64
+
+	var enqueue func(*analysisNode)
 	enqueue = func(an *analysisNode) {
 		g.Go(func() error {
+			limiter <- unit{}
+			defer func() { <-limiter }()
+
 			summary, err := an.runCached(ctx)
 			if err != nil {
 				return err // cancelled, or failed to produce a package
 			}
+			maybeReport(atomic.AddInt64(&completed, 1))
 			an.summary = summary
 
 			// Notify each waiting predecessor,
 			// and enqueue it when it becomes a leaf.
 			for _, pred := range an.preds {
-				if atomic.AddInt32(&pred.count, -1) == 0 {
+				if atomic.AddInt32(&pred.unfinishedSuccs, -1) == 0 {
 					enqueue(pred)
 				}
+			}
+
+			// Notify each successor that we no longer need
+			// its action summaries, which hold Result values.
+			// After the last one, delete it, so that we
+			// free up large results such as SSA.
+			for _, succ := range an.succs {
+				succ.decrefPreds()
 			}
 			return nil
 		})
@@ -374,6 +459,12 @@ func (snapshot *snapshot) Analyze(ctx context.Context, pkgs map[PackageID]unit, 
 	return results, nil
 }
 
+func (an *analysisNode) decrefPreds() {
+	if atomic.AddInt32(&an.unfinishedPreds, -1) == 0 {
+		an.summary.Actions = nil
+	}
+}
+
 // An analysisNode is a node in a doubly-linked DAG isomorphic to the
 // import graph. Each node represents a single package, and the DAG
 // represents a batch of analysis work done at once using a single
@@ -398,16 +489,17 @@ func (snapshot *snapshot) Analyze(ctx context.Context, pkgs map[PackageID]unit, 
 // its summary field is populated, either from the cache (hit), or by
 // type-checking and analyzing syntax (miss).
 type analysisNode struct {
-	fset       *token.FileSet                // file set shared by entire batch (DAG)
-	m          *source.Metadata              // metadata for this package
-	files      []source.FileHandle           // contents of CompiledGoFiles
-	analyzers  []*analysis.Analyzer          // set of analyzers to run
-	preds      []*analysisNode               // graph edges:
-	succs      map[PackageID]*analysisNode   //   (preds -> self -> succs)
-	allDeps    map[PackagePath]*analysisNode // all dependencies including self
-	exportDeps map[PackagePath]*analysisNode // subset of allDeps ref'd by export data (+self)
-	count      int32                         // number of unfinished successors
-	summary    *analyzeSummary               // serializable result of analyzing this package
+	fset            *token.FileSet              // file set shared by entire batch (DAG)
+	m               *source.Metadata            // metadata for this package
+	files           []source.FileHandle         // contents of CompiledGoFiles
+	analyzers       []*analysis.Analyzer        // set of analyzers to run
+	preds           []*analysisNode             // graph edges:
+	succs           map[PackageID]*analysisNode //   (preds -> self -> succs)
+	unfinishedSuccs int32
+	unfinishedPreds int32                         // effectively a summary.Actions refcount
+	allDeps         map[PackagePath]*analysisNode // all dependencies including self
+	exportDeps      map[PackagePath]*analysisNode // subset of allDeps ref'd by export data (+self)
+	summary         *analyzeSummary               // serializable result of analyzing this package
 
 	typesOnce sync.Once      // guards lazy population of types and typesErr fields
 	types     *types.Package // type information lazily imported from summary
@@ -459,7 +551,7 @@ func (an *analysisNode) _import() (*types.Package, error) {
 			}
 			return g.Wait()
 		}
-		pkg, err := gcimporter.IImportShallow(an.fset, getPackages, an.summary.Export, string(an.m.PkgPath))
+		pkg, err := gcimporter.IImportShallow(an.fset, getPackages, an.summary.Export, string(an.m.PkgPath), bug.Reportf)
 		if err != nil {
 			an.typesErr = bug.Errorf("%s: invalid export data: %v", an.m, err)
 			an.types = nil
@@ -555,7 +647,7 @@ func (an *analysisNode) runCached(ctx context.Context) (*analyzeSummary, error) 
 	const cacheKind = "analysis"
 	if data, err := filecache.Get(cacheKind, key); err == nil {
 		// cache hit
-		mustDecode(data, &summary)
+		analyzeSummaryCodec.Decode(data, &summary)
 	} else if err != filecache.ErrNotFound {
 		return nil, bug.Errorf("internal error reading shared cache: %v", err)
 	} else {
@@ -565,8 +657,15 @@ func (an *analysisNode) runCached(ctx context.Context) (*analyzeSummary, error) 
 		if err != nil {
 			return nil, err
 		}
+
+		atomic.AddInt32(&an.unfinishedPreds, +1) // incref
 		go func() {
-			data := mustEncode(summary)
+			defer an.decrefPreds() //decref
+
+			cacheLimit <- unit{}            // acquire token
+			defer func() { <-cacheLimit }() // release token
+
+			data := analyzeSummaryCodec.Encode(summary)
 			if false {
 				log.Printf("Set key=%d value=%d id=%s\n", len(key), len(data), an.m.ID)
 			}
@@ -578,6 +677,10 @@ func (an *analysisNode) runCached(ctx context.Context) (*analyzeSummary, error) 
 
 	return summary, nil
 }
+
+// cacheLimit reduces parallelism of cache updates.
+// We allow more than typical GOMAXPROCS as it's a mix of CPU and I/O.
+var cacheLimit = make(chan unit, 32)
 
 // analysisCacheKey returns a cache key that is a cryptographic digest
 // of the all the values that might affect type checking and analysis:
@@ -604,10 +707,9 @@ func (an *analysisNode) cacheKey() [sha256.Size]byte {
 	// uses those fields, we account for them by hashing vdeps.
 
 	// type sizes
-	// This assertion is safe, but if a black-box implementation
-	// is ever needed, record Sizeof(*int) and Alignof(int64).
-	sz := m.TypesSizes.(*types.StdSizes)
-	fmt.Fprintf(hasher, "sizes: %d %d\n", sz.WordSize, sz.MaxAlign)
+	wordSize := an.m.TypesSizes.Sizeof(types.Typ[types.Int])
+	maxAlign := an.m.TypesSizes.Alignof(types.NewPointer(types.Typ[types.Int64]))
+	fmt.Fprintf(hasher, "sizes: %d %d\n", wordSize, maxAlign)
 
 	// metadata errors: used for 'compiles' field
 	fmt.Fprintf(hasher, "errors: %d", len(m.Errors))
@@ -670,6 +772,7 @@ func (an *analysisNode) run(ctx context.Context) (*analyzeSummary, error) {
 	parsed := make([]*source.ParsedGoFile, len(an.files))
 	{
 		var group errgroup.Group
+		group.SetLimit(4) // not too much: run itself is already called in parallel
 		for i, fh := range an.files {
 			i, fh := i, fh
 			group.Go(func() error {
@@ -677,7 +780,7 @@ func (an *analysisNode) run(ctx context.Context) (*analyzeSummary, error) {
 				// as cached ASTs require the global FileSet.
 				// ast.Object resolution is unfortunately an implied part of the
 				// go/analysis contract.
-				pgf, err := parseGoImpl(ctx, an.fset, fh, source.ParseFull&^source.SkipObjectResolution)
+				pgf, err := parseGoImpl(ctx, an.fset, fh, source.ParseFull&^source.SkipObjectResolution, false)
 				parsed[i] = pgf
 				return err
 			})
@@ -912,7 +1015,7 @@ func (an *analysisNode) typeCheck(parsed []*source.ParsedGoFile) *analysisPackag
 	}
 
 	// Emit the export data and compute the recursive hash.
-	export, err := gcimporter.IExportShallow(pkg.fset, pkg.types)
+	export, err := gcimporter.IExportShallow(pkg.fset, pkg.types, bug.Reportf)
 	if err != nil {
 		// TODO(adonovan): in light of exporter bugs such as #57729,
 		// consider using bug.Report here and retrying the IExportShallow
@@ -960,7 +1063,7 @@ func readShallowManifest(export []byte) ([]PackagePath, error) {
 		}
 		return errors.New("stop") // terminate importer
 	}
-	_, err := gcimporter.IImportShallow(token.NewFileSet(), getPackages, export, selfPath)
+	_, err := gcimporter.IImportShallow(token.NewFileSet(), getPackages, export, selfPath, bug.Reportf)
 	if paths == nil {
 		if err != nil {
 			return nil, err // failed before getPackages callback
@@ -1093,19 +1196,22 @@ func (act *action) exec() (interface{}, *actionSummary, error) {
 	// decoder to obtain a more compact representation of
 	// packages and objects (e.g. its internal IDs, instead
 	// of PkgPaths and objectpaths.)
+	// More importantly, we should avoid re-export of
+	// facts that related to objects that are discarded
+	// by "deep" export data. Better still, use a "shallow" approach.
 
 	// Read and decode analysis facts for each direct import.
-	factset, err := pkg.factsDecoder.Decode(func(imp *types.Package) ([]byte, error) {
+	factset, err := pkg.factsDecoder.Decode(true, func(pkgPath string) ([]byte, error) {
 		if !hasFacts {
 			return nil, nil // analyzer doesn't use facts, so no vdeps
 		}
 
 		// Package.Imports() may contain a fake "C" package. Ignore it.
-		if imp.Path() == "C" {
+		if pkgPath == "C" {
 			return nil, nil
 		}
 
-		id, ok := pkg.m.DepsByPkgPath[PackagePath(imp.Path())]
+		id, ok := pkg.m.DepsByPkgPath[PackagePath(pkgPath)]
 		if !ok {
 			// This may mean imp was synthesized by the type
 			// checker because it failed to import it for any reason
@@ -1167,14 +1273,7 @@ func (act *action) exec() (interface{}, *actionSummary, error) {
 		TypeErrors: pkg.typeErrors,
 		ResultOf:   inputs,
 		Report: func(d analysis.Diagnostic) {
-			// Prefix the diagnostic category with the analyzer's name.
-			if d.Category == "" {
-				d.Category = analyzer.Name
-			} else {
-				d.Category = analyzer.Name + "." + d.Category
-			}
-
-			diagnostic, err := toGobDiagnostic(posToLocation, d)
+			diagnostic, err := toGobDiagnostic(posToLocation, analyzer, d)
 			if err != nil {
 				bug.Reportf("internal error converting diagnostic from analyzer %q: %v", analyzer.Name, err)
 				return
@@ -1193,6 +1292,7 @@ func (act *action) exec() (interface{}, *actionSummary, error) {
 	// (Use an anonymous function to limit the recover scope.)
 	var result interface{}
 	func() {
+		start := time.Now()
 		defer func() {
 			if r := recover(); r != nil {
 				// An Analyzer panicked, likely due to a bug.
@@ -1215,7 +1315,13 @@ func (act *action) exec() (interface{}, *actionSummary, error) {
 					err = fmt.Errorf("analysis %s for package %s panicked: %v", analyzer.Name, pass.Pkg.Path(), r)
 				}
 			}
+
+			// Accumulate running time for each checker.
+			analyzerRunTimesMu.Lock()
+			analyzerRunTimes[analyzer] += time.Since(start)
+			analyzerRunTimesMu.Unlock()
 		}()
+
 		result, err = pass.Analyzer.Run(pass)
 	}()
 	if err != nil {
@@ -1237,12 +1343,38 @@ func (act *action) exec() (interface{}, *actionSummary, error) {
 		panic(fmt.Sprintf("%v: Pass.ExportPackageFact(%T) called after Run", act, fact))
 	}
 
-	factsdata := factset.Encode()
+	factsdata := factset.Encode(true)
 	return result, &actionSummary{
 		Diagnostics: diagnostics,
 		Facts:       factsdata,
 		FactsHash:   source.HashOf(factsdata),
 	}, nil
+}
+
+var (
+	analyzerRunTimesMu sync.Mutex
+	analyzerRunTimes   = make(map[*analysis.Analyzer]time.Duration)
+)
+
+type LabelDuration struct {
+	Label    string
+	Duration time.Duration
+}
+
+// AnalyzerTimes returns the accumulated time spent in each Analyzer's
+// Run function since process start, in descending order.
+func AnalyzerRunTimes() []LabelDuration {
+	analyzerRunTimesMu.Lock()
+	defer analyzerRunTimesMu.Unlock()
+
+	slice := make([]LabelDuration, 0, len(analyzerRunTimes))
+	for a, t := range analyzerRunTimes {
+		slice = append(slice, LabelDuration{Label: a.Name, Duration: t})
+	}
+	sort.Slice(slice, func(i, j int) bool {
+		return slice[i].Duration > slice[j].Duration
+	})
+	return slice
 }
 
 // requiredAnalyzers returns the transitive closure of required analyzers in preorder.
@@ -1263,37 +1395,12 @@ func requiredAnalyzers(analyzers []*analysis.Analyzer) []*analysis.Analyzer {
 	return result
 }
 
-func mustEncode(x interface{}) []byte {
-	var buf bytes.Buffer
-	if err := gob.NewEncoder(&buf).Encode(x); err != nil {
-		log.Fatalf("internal error encoding %T: %v", x, err)
-	}
-	return buf.Bytes()
-}
-
-// TODO(rfindley): based on profiling, we should consider using JSON encoding
-// throughout, rather than gob encoding.
-func mustJSONEncode(x interface{}) []byte {
-	data, err := json.Marshal(x)
-	if err != nil {
-		log.Fatalf("internal error marshalling %T: %v", data, err)
-	}
-	return data
-}
-
-func mustDecode(data []byte, ptr interface{}) {
-	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(ptr); err != nil {
-		log.Fatalf("internal error decoding %T: %v", ptr, err)
-	}
-}
-
-func mustJSONDecode(data []byte, ptr interface{}) {
-	if err := json.Unmarshal(data, ptr); err != nil {
-		log.Fatalf("internal error unmarshalling %T: %v", ptr, err)
-	}
-}
+var analyzeSummaryCodec = frob.CodecFor[*analyzeSummary]()
 
 // -- data types for serialization of analysis.Diagnostic and source.Diagnostic --
+
+// (The name says gob but we use frob.)
+var diagnosticsCodec = frob.CodecFor[[]gobDiagnostic]()
 
 type gobDiagnostic struct {
 	Location       protocol.Location
@@ -1332,7 +1439,7 @@ type gobTextEdit struct {
 
 // toGobDiagnostic converts an analysis.Diagnosic to a serializable gobDiagnostic,
 // which requires expanding token.Pos positions into protocol.Location form.
-func toGobDiagnostic(posToLocation func(start, end token.Pos) (protocol.Location, error), diag analysis.Diagnostic) (gobDiagnostic, error) {
+func toGobDiagnostic(posToLocation func(start, end token.Pos) (protocol.Location, error), a *analysis.Analyzer, diag analysis.Diagnostic) (gobDiagnostic, error) {
 	var fixes []gobSuggestedFix
 	for _, fix := range diag.SuggestedFixes {
 		var gobEdits []gobTextEdit
@@ -1369,16 +1476,40 @@ func toGobDiagnostic(posToLocation func(start, end token.Pos) (protocol.Location
 		return gobDiagnostic{}, err
 	}
 
+	// The Code column of VSCode's Problems table renders this
+	// information as "Source(Code)" where code is a link to CodeHref.
+	// (The code field must be nonempty for anything to appear.)
+	diagURL := effectiveURL(a, diag)
+	code := "default"
+	if diag.Category != "" {
+		code = diag.Category
+	}
+
 	return gobDiagnostic{
 		Location: loc,
-		// Severity for analysis diagnostics is dynamic, based on user
-		// configuration per analyzer.
-		// Code and CodeHref are unset for Analysis diagnostics,
-		// TODO(rfindley): derive Code fields from diag.URL.
-		Source:         diag.Category,
+		// Severity for analysis diagnostics is dynamic,
+		// based on user configuration per analyzer.
+		Code:           code,
+		CodeHref:       diagURL,
+		Source:         a.Name,
 		Message:        diag.Message,
 		SuggestedFixes: fixes,
 		Related:        related,
 		// Analysis diagnostics do not contain tags.
 	}, nil
+}
+
+// effectiveURL computes the effective URL of diag,
+// using the algorithm specified at Diagnostic.URL.
+func effectiveURL(a *analysis.Analyzer, diag analysis.Diagnostic) string {
+	u := diag.URL
+	if u == "" && diag.Category != "" {
+		u = "#" + diag.Category
+	}
+	if base, err := urlpkg.Parse(a.URL); err == nil {
+		if rel, err := urlpkg.Parse(u); err == nil {
+			u = base.ResolveReference(rel).String()
+		}
+	}
+	return u
 }

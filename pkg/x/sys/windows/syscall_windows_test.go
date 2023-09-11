@@ -22,18 +22,11 @@ import (
 	"time"
 	"unsafe"
 
-	"uw/pkg/x/sys/internal/unsafeheader"
 	"uw/pkg/x/sys/windows"
 )
 
 func TestWin32finddata(t *testing.T) {
-	dir, err := ioutil.TempDir("", "go-build")
-	if err != nil {
-		t.Fatalf("failed to create temp directory: %v", err)
-	}
-	defer os.RemoveAll(dir)
-
-	path := filepath.Join(dir, "long_name.and_extension")
+	path := filepath.Join(t.TempDir(), "long_name.and_extension")
 	f, err := os.Create(path)
 	if err != nil {
 		t.Fatalf("failed to create %v: %v", path, err)
@@ -226,7 +219,7 @@ func TestKnownFolderPath(t *testing.T) {
 func TestRtlGetVersion(t *testing.T) {
 	version := windows.RtlGetVersion()
 	major, minor, build := windows.RtlGetNtVersionNumbers()
-	// Go is not explictly added to the application compatibility database, so
+	// Go is not explicitly added to the application compatibility database, so
 	// these two functions should return the same thing.
 	if version.MajorVersion != major || version.MinorVersion != minor || version.BuildNumber != build {
 		t.Fatalf("%d.%d.%d != %d.%d.%d", version.MajorVersion, version.MinorVersion, version.BuildNumber, major, minor, build)
@@ -673,12 +666,7 @@ func TestWinVerifyTrust(t *testing.T) {
 
 	// Now that we've verified the legitimate file verifies, let's corrupt it and see if it correctly fails.
 
-	dir, err := ioutil.TempDir("", "go-build")
-	if err != nil {
-		t.Fatalf("failed to create temp directory: %v", err)
-	}
-	defer os.RemoveAll(dir)
-	corruptedEvsignedfile := filepath.Join(dir, "corrupted-file")
+	corruptedEvsignedfile := filepath.Join(t.TempDir(), "corrupted-file")
 	evsignedfileBytes, err := ioutil.ReadFile(evsignedfile)
 	if err != nil {
 		t.Fatalf("unable to read %s bytes: %v", evsignedfile, err)
@@ -876,10 +864,7 @@ func TestSystemModuleVersions(t *testing.T) {
 			return
 		}
 		mods := (*windows.RTL_PROCESS_MODULES)(unsafe.Pointer(&moduleBuffer[0]))
-		hdr := (*unsafeheader.Slice)(unsafe.Pointer(&modules))
-		hdr.Data = unsafe.Pointer(&mods.Modules[0])
-		hdr.Len = int(mods.NumberOfModules)
-		hdr.Cap = int(mods.NumberOfModules)
+		modules = unsafe.Slice(&mods.Modules[0], int(mods.NumberOfModules))
 		break
 	}
 	for i := range modules {
@@ -1162,5 +1147,23 @@ items_loop:
 		default:
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestTimePeriod(t *testing.T) {
+	if err := windows.TimeBeginPeriod(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := windows.TimeEndPeriod(1); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGetStartupInfo(t *testing.T) {
+	var si windows.StartupInfo
+	err := windows.GetStartupInfo(&si)
+	if err != nil {
+		// see https://go.dev/issue/31316
+		t.Fatalf("GetStartupInfo: got error %v, want nil", err)
 	}
 }

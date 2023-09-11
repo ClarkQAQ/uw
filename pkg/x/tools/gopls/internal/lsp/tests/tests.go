@@ -56,8 +56,6 @@ var summaryFile = "summary.txt"
 func init() {
 	if testenv.Go1Point() >= 21 {
 		summaryFile = "summary_go1.21.txt"
-	} else if testenv.Go1Point() >= 18 {
-		summaryFile = "summary_go1.18.txt"
 	}
 }
 
@@ -76,7 +74,6 @@ type DeepCompletions = map[span.Span][]Completion
 type FuzzyCompletions = map[span.Span][]Completion
 type CaseSensitiveCompletions = map[span.Span][]Completion
 type RankCompletions = map[span.Span][]Completion
-type FoldingRanges = []span.Span
 type SemanticTokens = []span.Span
 type SuggestedFixes = map[span.Span][]SuggestedFix
 type MethodExtractions = map[span.Span]span.Span
@@ -104,7 +101,6 @@ type Data struct {
 	FuzzyCompletions         FuzzyCompletions
 	CaseSensitiveCompletions CaseSensitiveCompletions
 	RankCompletions          RankCompletions
-	FoldingRanges            FoldingRanges
 	SemanticTokens           SemanticTokens
 	SuggestedFixes           SuggestedFixes
 	MethodExtractions        MethodExtractions
@@ -146,7 +142,6 @@ type Tests interface {
 	FuzzyCompletion(*testing.T, span.Span, Completion, CompletionItems)
 	CaseSensitiveCompletion(*testing.T, span.Span, Completion, CompletionItems)
 	RankCompletion(*testing.T, span.Span, Completion, CompletionItems)
-	FoldingRanges(*testing.T, span.Span)
 	SemanticTokens(*testing.T, span.Span)
 	SuggestedFix(*testing.T, span.Span, []SuggestedFix, int)
 	MethodExtraction(*testing.T, span.Span, span.Span)
@@ -230,6 +225,7 @@ func DefaultOptions(o *source.Options) {
 			protocol.SourceOrganizeImports: true,
 			protocol.QuickFix:              true,
 			protocol.RefactorRewrite:       true,
+			protocol.RefactorInline:        true,
 			protocol.RefactorExtract:       true,
 			protocol.SourceFixAll:          true,
 		},
@@ -246,7 +242,15 @@ func DefaultOptions(o *source.Options) {
 	o.CompletionBudget = time.Minute
 	o.HierarchicalDocumentSymbolSupport = true
 	o.SemanticTokens = true
-	o.InternalOptions.NewDiff = "both"
+	o.InternalOptions.NewDiff = "new"
+
+	// Enable all inlay hints.
+	if o.Hints == nil {
+		o.Hints = make(map[string]bool)
+	}
+	for name := range source.AllInlayHints {
+		o.Hints[name] = true
+	}
 }
 
 func RunTests(t *testing.T, dataDir string, includeMultiModule bool, f func(*testing.T, *Data)) {
@@ -428,7 +432,6 @@ func load(t testing.TB, mode string, dir string) *Data {
 		"casesensitive":  datum.collectCompletions(CompletionCaseSensitive),
 		"rank":           datum.collectCompletions(CompletionRank),
 		"snippet":        datum.collectCompletionSnippets,
-		"fold":           datum.collectFoldingRanges,
 		"semantic":       datum.collectSemanticTokens,
 		"godef":          datum.collectDefinitions,
 		"typdef":         datum.collectTypeDefinitions,
@@ -606,16 +609,6 @@ func Run(t *testing.T, tests Tests, data *Data) {
 			t.Run(uriName(uri), func(t *testing.T) {
 				t.Helper()
 				tests.Diagnostics(t, uri, want)
-			})
-		}
-	})
-
-	t.Run("FoldingRange", func(t *testing.T) {
-		t.Helper()
-		for _, spn := range data.FoldingRanges {
-			t.Run(uriName(spn.URI()), func(t *testing.T) {
-				t.Helper()
-				tests.FoldingRanges(t, spn)
 			})
 		}
 	})
@@ -825,7 +818,6 @@ func checkData(t *testing.T, data *Data) {
 	fmt.Fprintf(buf, "RankedCompletionsCount = %v\n", countCompletions(data.RankCompletions))
 	fmt.Fprintf(buf, "CaseSensitiveCompletionsCount = %v\n", countCompletions(data.CaseSensitiveCompletions))
 	fmt.Fprintf(buf, "DiagnosticsCount = %v\n", diagnosticsCount)
-	fmt.Fprintf(buf, "FoldingRangesCount = %v\n", len(data.FoldingRanges))
 	fmt.Fprintf(buf, "SemanticTokenCount = %v\n", len(data.SemanticTokens))
 	fmt.Fprintf(buf, "SuggestedFixCount = %v\n", len(data.SuggestedFixes))
 	fmt.Fprintf(buf, "MethodExtractionCount = %v\n", len(data.MethodExtractions))
@@ -996,10 +988,6 @@ func (data *Data) collectCompletionItems(pos token.Pos, label, detail, kind stri
 	}
 }
 
-func (data *Data) collectFoldingRanges(spn span.Span) {
-	data.FoldingRanges = append(data.FoldingRanges, spn)
-}
-
 func (data *Data) collectAddImports(spn span.Span, imp string) {
 	data.AddImport[spn.URI()] = imp
 }
@@ -1156,38 +1144,6 @@ func uriName(uri span.URI) string {
 // line:column position formatting.
 func SpanName(spn span.Span) string {
 	return fmt.Sprintf("%v_%v_%v", uriName(spn.URI()), spn.Start().Line(), spn.Start().Column())
-}
-
-func CopyFolderToTempDir(folder string) (string, error) {
-	if _, err := os.Stat(folder); err != nil {
-		return "", err
-	}
-	dst, err := ioutil.TempDir("", "modfile_test")
-	if err != nil {
-		return "", err
-	}
-	fds, err := ioutil.ReadDir(folder)
-	if err != nil {
-		return "", err
-	}
-	for _, fd := range fds {
-		srcfp := filepath.Join(folder, fd.Name())
-		stat, err := os.Stat(srcfp)
-		if err != nil {
-			return "", err
-		}
-		if !stat.Mode().IsRegular() {
-			return "", fmt.Errorf("cannot copy non regular file %s", srcfp)
-		}
-		contents, err := ioutil.ReadFile(srcfp)
-		if err != nil {
-			return "", err
-		}
-		if err := ioutil.WriteFile(filepath.Join(dst, fd.Name()), contents, stat.Mode()); err != nil {
-			return "", err
-		}
-	}
-	return dst, nil
 }
 
 func shouldSkip(data *Data, uri span.URI) bool {

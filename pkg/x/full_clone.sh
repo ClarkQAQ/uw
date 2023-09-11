@@ -9,6 +9,8 @@ BASE_PACKAGE_URL="golang.org/x/"
 BASE_REPLACE_URL="uw/pkg/x/"
 # 包列表
 PACKAGE_LIST="sys,sync,text,net,tools,mod,crypto,image,term"
+# 自定义替换列表用 ; 分隔
+REPLACE_LIST="uw/pkg/goldmark:uw/pkg/goldmark"
 
 cd $PWD_PATH
 
@@ -48,6 +50,17 @@ _CLONE_PACKAGE() {
     done
     echo "URL 替换完成"
 
+    # 替换自定义的 URL
+    echo "开始替换自定义 URL"
+    # 使用逗号分隔的替换列表并遍历
+    for REPLACE_ITEM in $(echo $REPLACE_LIST | tr "," "\n"); do
+        REPLACE_ITEM_ARRAY=(${REPLACE_ITEM//:/ })
+        REPLACE_ITEM_URL=${REPLACE_ITEM_ARRAY[0]}
+        REPLACE_ITEM_REPLACE_URL=${REPLACE_ITEM_ARRAY[1]}
+        echo "正在替换 ${PACKAGE_PATH} 的 ${REPLACE_ITEM_URL} 为 ${REPLACE_ITEM_REPLACE_URL}"
+        find . -type f -exec sed -i "s#${REPLACE_ITEM_URL}#${REPLACE_ITEM_REPLACE_URL}#g" {} \;
+    done
+
     # 删除 go.mod 和 go.sum
     rm go.mod go.sum
 
@@ -78,4 +91,4 @@ else
     _CLONE_PACKAGE $1
 fi
 
-
+# 删除: 

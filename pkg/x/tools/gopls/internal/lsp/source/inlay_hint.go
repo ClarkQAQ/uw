@@ -88,7 +88,7 @@ func InlayHint(ctx context.Context, snapshot Snapshot, fh FileHandle, pRng proto
 	}
 
 	// Collect a list of the inlay hints that are enabled.
-	inlayHintOptions := snapshot.View().Options().InlayHintOptions
+	inlayHintOptions := snapshot.Options().InlayHintOptions
 	var enabledHints []InlayHintFunc
 	for hint, enabled := range inlayHintOptions.Hints {
 		if !enabled {
@@ -157,7 +157,7 @@ func parameterNames(node ast.Node, m *protocol.Mapper, tf *token.File, info *typ
 		if param.Name() == "" {
 			continue
 		}
-		// Skip the parameter name hint if the arg matches the
+		// Skip the parameter name hint if the arg matches
 		// the parameter name.
 		if i, ok := v.(*ast.Ident); ok && i.Name == param.Name() {
 			continue

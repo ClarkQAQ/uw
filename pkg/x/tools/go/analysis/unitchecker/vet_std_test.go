@@ -19,6 +19,7 @@ import (
 	"uw/pkg/x/tools/go/analysis/passes/cgocall"
 	"uw/pkg/x/tools/go/analysis/passes/composite"
 	"uw/pkg/x/tools/go/analysis/passes/copylock"
+	"uw/pkg/x/tools/go/analysis/passes/defers"
 	"uw/pkg/x/tools/go/analysis/passes/directive"
 	"uw/pkg/x/tools/go/analysis/passes/errorsas"
 	"uw/pkg/x/tools/go/analysis/passes/framepointer"
@@ -54,6 +55,7 @@ func vet() {
 		cgocall.Analyzer,
 		composite.Analyzer,
 		copylock.Analyzer,
+		defers.Analyzer,
 		directive.Analyzer,
 		errorsas.Analyzer,
 		framepointer.Analyzer,
@@ -68,8 +70,8 @@ func vet() {
 		stdmethods.Analyzer,
 		stringintconv.Analyzer,
 		structtag.Analyzer,
-		tests.Analyzer,
 		testinggoroutine.Analyzer,
+		tests.Analyzer,
 		timeformat.Analyzer,
 		unmarshal.Analyzer,
 		unreachable.Analyzer,

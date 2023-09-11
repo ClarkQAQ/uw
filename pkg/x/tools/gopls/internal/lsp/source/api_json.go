@@ -269,13 +269,23 @@ var GeneratedAPIJSON = &APIJSON{
 							Default: "true",
 						},
 						{
+							Name:    "\"defer\"",
+							Doc:     "report common mistakes in defer statements\n\nThe defer analyzer reports a diagnostic when a defer statement would\nresult in a non-deferred call to time.Since, as experience has shown\nthat this is nearly always a mistake.\n\nFor example:\n\n\tstart := time.Now()\n\t...\n\tdefer recordLatency(time.Since(start)) // error: call to time.Since is not deferred\n\nThe correct code is:\n\n\tdefer func() { recordLatency(time.Since(start)) }()",
+							Default: "true",
+						},
+						{
+							Name:    "\"deprecated\"",
+							Doc:     "check for use of deprecated identifiers\n\nThe deprecated analyzer looks for deprecated symbols and package imports.\n\nSee https://go.dev/wiki/Deprecated to learn about Go's convention\nfor documenting and signaling deprecated identifiers.",
+							Default: "true",
+						},
+						{
 							Name:    "\"directive\"",
 							Doc:     "check Go toolchain directives such as //go:debug\n\nThis analyzer checks for problems with known Go toolchain directives\nin all Go source files in a package directory, even those excluded by\n//go:build constraints, and all non-Go source files too.\n\nFor //go:debug (see https://go.dev/doc/godebug), the analyzer checks\nthat the directives are placed only in Go source files, only above the\npackage comment, and only in package main or *_test.go files.\n\nSupport for other known directives may be added in the future.\n\nThis analyzer does not check //go:build, which is handled by the\nbuildtag analyzer.\n",
 							Default: "true",
 						},
 						{
 							Name:    "\"embed\"",
-							Doc:     "check for //go:embed directive import\n\nThis analyzer checks that the embed package is imported when source code contains //go:embed comment directives.\nThe embed package must be imported for //go:embed directives to function.import _ \"embed\".",
+							Doc:     "check //go:embed directive usage\n\nThis analyzer checks that the embed package is imported if //go:embed\ndirectives are present, providing a suggested fix to add the import if\nit is missing.\n\nThis analyzer also checks that //go:embed directives precede the\ndeclaration of a single variable.",
 							Default: "true",
 						},
 						{
@@ -349,6 +359,11 @@ var GeneratedAPIJSON = &APIJSON{
 							Default: "true",
 						},
 						{
+							Name:    "\"slog\"",
+							Doc:     "check for invalid structured logging calls\n\nThe slog checker looks for calls to functions from the log/slog\npackage that take alternating key-value pairs. It reports calls\nwhere an argument in a key position is neither a string nor a\nslog.Attr, and where a final key is missing its value.\nFor example,it would report\n\n\tslog.Warn(\"message\", 11, \"k\") // slog.Warn arg \"11\" should be a string or a slog.Attr\n\nand\n\n\tslog.Info(\"message\", \"k1\", v1, \"k2\") // call to slog.Info missing a final value",
+							Default: "true",
+						},
+						{
 							Name:    "\"sortslice\"",
 							Doc:     "check the argument type of sort.Slice\n\nsort.Slice requires an argument of a slice type. Check that\nthe interface{} value passed to sort.Slice is actually a slice.",
 							Default: "true",
@@ -400,7 +415,7 @@ var GeneratedAPIJSON = &APIJSON{
 						},
 						{
 							Name:    "\"unusedparams\"",
-							Doc:     "check for unused parameters of functions\n\nThe unusedparams analyzer checks functions to see if there are\nany parameters that are not being used.\n\nTo reduce false positives it ignores:\n- methods\n- parameters that do not have a name or are underscored\n- functions in test files\n- functions with empty bodies or those with just a return stmt",
+							Doc:     "check for unused parameters of functions\n\nThe unusedparams analyzer checks functions to see if there are\nany parameters that are not being used.\n\nTo reduce false positives it ignores:\n- methods\n- parameters that do not have a name or have the name '_' (the blank identifier)\n- functions in test files\n- functions with empty bodies or those with just a return stmt",
 							Default: "false",
 						},
 						{
@@ -528,6 +543,13 @@ var GeneratedAPIJSON = &APIJSON{
 				Doc:       "diagnosticsDelay controls the amount of time that gopls waits\nafter the most recent file modification before computing deep diagnostics.\nSimple diagnostics (parsing and type-checking) are always run immediately\non recently modified packages.\n\nThis option must be set to a valid duration string, for example `\"250ms\"`.\n",
 				Default:   "\"1s\"",
 				Status:    "advanced",
+				Hierarchy: "ui.diagnostic",
+			},
+			{
+				Name:      "analysisProgressReporting",
+				Type:      "bool",
+				Doc:       "analysisProgressReporting controls whether gopls sends progress\nnotifications when construction of its index of analysis facts is taking a\nlong time. Cancelling these notifications will cancel the indexing task,\nthough it will restart after the next change in the workspace.\n\nWhen a package is opened for the first time and heavyweight analyses such as\nstaticcheck are enabled, it can take a while to construct the index of\nanalysis facts for all its dependencies. The index is cached in the\nfilesystem, so subsequent analysis should be faster.\n",
+				Default:   "true",
 				Hierarchy: "ui.diagnostic",
 			},
 			{
@@ -791,8 +813,22 @@ var GeneratedAPIJSON = &APIJSON{
 			Command:   "gopls.start_debugging",
 			Title:     "Start the gopls debug server",
 			Doc:       "Start the gopls debug server if it isn't running, and return the debug\naddress.",
-			ArgDoc:    "{\n\t// Optional: the address (including port) for the debug server to listen on.\n\t// If not provided, the debug server will bind to \"localhost:0\", and the\n\t// full debug URL will be contained in the result.\n\t// \n\t// If there is more than one gopls instance along the serving path (i.e. you\n\t// are using a daemon), each gopls instance will attempt to start debugging.\n\t// If Addr specifies a port, only the daemon will be able to bind to that\n\t// port, and each intermediate gopls instance will fail to start debugging.\n\t// For this reason it is recommended not to specify a port (or equivalently,\n\t// to specify \":0\").\n\t// \n\t// If the server was already debugging this field has no effect, and the\n\t// result will contain the previously configured debug URL(s).\n\t\"Addr\": string,\n}",
-			ResultDoc: "{\n\t// The URLs to use to access the debug servers, for all gopls instances in\n\t// the serving path. For the common case of a single gopls instance (i.e. no\n\t// daemon), this will be exactly one address.\n\t// \n\t// In the case of one or more gopls instances forwarding the LSP to a daemon,\n\t// URLs will contain debug addresses for each server in the serving path, in\n\t// serving order. The daemon debug address will be the last entry in the\n\t// slice. If any intermediate gopls instance fails to start debugging, no\n\t// error will be returned but the debug URL for that server in the URLs slice\n\t// will be empty.\n\t\"URLs\": []string,\n}",
+			ArgDoc:    "{\n\t// Optional: the address (including port) for the debug server to listen on.\n\t// If not provided, the debug server will bind to \"localhost:0\", and the\n\t// full debug URL will be contained in the result.\n\t//\n\t// If there is more than one gopls instance along the serving path (i.e. you\n\t// are using a daemon), each gopls instance will attempt to start debugging.\n\t// If Addr specifies a port, only the daemon will be able to bind to that\n\t// port, and each intermediate gopls instance will fail to start debugging.\n\t// For this reason it is recommended not to specify a port (or equivalently,\n\t// to specify \":0\").\n\t//\n\t// If the server was already debugging this field has no effect, and the\n\t// result will contain the previously configured debug URL(s).\n\t\"Addr\": string,\n}",
+			ResultDoc: "{\n\t// The URLs to use to access the debug servers, for all gopls instances in\n\t// the serving path. For the common case of a single gopls instance (i.e. no\n\t// daemon), this will be exactly one address.\n\t//\n\t// In the case of one or more gopls instances forwarding the LSP to a daemon,\n\t// URLs will contain debug addresses for each server in the serving path, in\n\t// serving order. The daemon debug address will be the last entry in the\n\t// slice. If any intermediate gopls instance fails to start debugging, no\n\t// error will be returned but the debug URL for that server in the URLs slice\n\t// will be empty.\n\t\"URLs\": []string,\n}",
+		},
+		{
+			Command:   "gopls.start_profile",
+			Title:     "start capturing a profile of gopls' execution.",
+			Doc:       "Start a new pprof profile. Before using the resulting file, profiling must\nbe stopped with a corresponding call to StopProfile.\n\nThis command is intended for internal use only, by the gopls benchmark\nrunner.",
+			ArgDoc:    "struct{}",
+			ResultDoc: "struct{}",
+		},
+		{
+			Command:   "gopls.stop_profile",
+			Title:     "stop an ongoing profile.",
+			Doc:       "This command is intended for internal use only, by the gopls benchmark\nrunner.",
+			ArgDoc:    "struct{}",
+			ResultDoc: "{\n\t// File is the profile file name.\n\t\"File\": string,\n}",
 		},
 		{
 			Command: "gopls.test",
@@ -925,7 +961,7 @@ var GeneratedAPIJSON = &APIJSON{
 		{
 			Name:    "composites",
 			Doc:     "check for unkeyed composite literals\n\nThis analyzer reports a diagnostic for composite literals of struct\ntypes imported from another package that do not use the field-keyed\nsyntax. Such literals are fragile because the addition of a new field\n(even if unexported) to the struct will cause compilation to fail.\n\nAs an example,\n\n\terr = &net.DNSConfigError{err}\n\nshould be replaced by:\n\n\terr = &net.DNSConfigError{Err: err}\n",
-			URL:     "https://pkg.go.dev/uw/pkg/x/tools/go/analysis/passes/composites",
+			URL:     "https://pkg.go.dev/uw/pkg/x/tools/go/analysis/passes/composite",
 			Default: true,
 		},
 		{
@@ -941,6 +977,16 @@ var GeneratedAPIJSON = &APIJSON{
 			Default: true,
 		},
 		{
+			Name:    "defer",
+			Doc:     "report common mistakes in defer statements\n\nThe defer analyzer reports a diagnostic when a defer statement would\nresult in a non-deferred call to time.Since, as experience has shown\nthat this is nearly always a mistake.\n\nFor example:\n\n\tstart := time.Now()\n\t...\n\tdefer recordLatency(time.Since(start)) // error: call to time.Since is not deferred\n\nThe correct code is:\n\n\tdefer func() { recordLatency(time.Since(start)) }()",
+			Default: true,
+		},
+		{
+			Name:    "deprecated",
+			Doc:     "check for use of deprecated identifiers\n\nThe deprecated analyzer looks for deprecated symbols and package imports.\n\nSee https://go.dev/wiki/Deprecated to learn about Go's convention\nfor documenting and signaling deprecated identifiers.",
+			Default: true,
+		},
+		{
 			Name:    "directive",
 			Doc:     "check Go toolchain directives such as //go:debug\n\nThis analyzer checks for problems with known Go toolchain directives\nin all Go source files in a package directory, even those excluded by\n//go:build constraints, and all non-Go source files too.\n\nFor //go:debug (see https://go.dev/doc/godebug), the analyzer checks\nthat the directives are placed only in Go source files, only above the\npackage comment, and only in package main or *_test.go files.\n\nSupport for other known directives may be added in the future.\n\nThis analyzer does not check //go:build, which is handled by the\nbuildtag analyzer.\n",
 			URL:     "https://pkg.go.dev/uw/pkg/x/tools/go/analysis/passes/directive",
@@ -948,7 +994,7 @@ var GeneratedAPIJSON = &APIJSON{
 		},
 		{
 			Name:    "embed",
-			Doc:     "check for //go:embed directive import\n\nThis analyzer checks that the embed package is imported when source code contains //go:embed comment directives.\nThe embed package must be imported for //go:embed directives to function.import _ \"embed\".",
+			Doc:     "check //go:embed directive usage\n\nThis analyzer checks that the embed package is imported if //go:embed\ndirectives are present, providing a suggested fix to add the import if\nit is missing.\n\nThis analyzer also checks that //go:embed directives precede the\ndeclaration of a single variable.",
 			Default: true,
 		},
 		{
@@ -1030,6 +1076,12 @@ var GeneratedAPIJSON = &APIJSON{
 			Default: true,
 		},
 		{
+			Name:    "slog",
+			Doc:     "check for invalid structured logging calls\n\nThe slog checker looks for calls to functions from the log/slog\npackage that take alternating key-value pairs. It reports calls\nwhere an argument in a key position is neither a string nor a\nslog.Attr, and where a final key is missing its value.\nFor example,it would report\n\n\tslog.Warn(\"message\", 11, \"k\") // slog.Warn arg \"11\" should be a string or a slog.Attr\n\nand\n\n\tslog.Info(\"message\", \"k1\", v1, \"k2\") // call to slog.Info missing a final value",
+			URL:     "https://pkg.go.dev/uw/pkg/x/tools/go/analysis/passes/slog",
+			Default: true,
+		},
+		{
 			Name:    "sortslice",
 			Doc:     "check the argument type of sort.Slice\n\nsort.Slice requires an argument of a slice type. Check that\nthe interface{} value passed to sort.Slice is actually a slice.",
 			URL:     "https://pkg.go.dev/uw/pkg/x/tools/go/analysis/passes/sortslice",
@@ -1091,7 +1143,7 @@ var GeneratedAPIJSON = &APIJSON{
 		},
 		{
 			Name: "unusedparams",
-			Doc:  "check for unused parameters of functions\n\nThe unusedparams analyzer checks functions to see if there are\nany parameters that are not being used.\n\nTo reduce false positives it ignores:\n- methods\n- parameters that do not have a name or are underscored\n- functions in test files\n- functions with empty bodies or those with just a return stmt",
+			Doc:  "check for unused parameters of functions\n\nThe unusedparams analyzer checks functions to see if there are\nany parameters that are not being used.\n\nTo reduce false positives it ignores:\n- methods\n- parameters that do not have a name or have the name '_' (the blank identifier)\n- functions in test files\n- functions with empty bodies or those with just a return stmt",
 		},
 		{
 			Name:    "unusedresult",

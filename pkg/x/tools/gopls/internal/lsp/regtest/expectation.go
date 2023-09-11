@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/google/go-cmp/cmp"
 	"uw/pkg/x/tools/gopls/internal/lsp"
 	"uw/pkg/x/tools/gopls/internal/lsp/protocol"
 )
@@ -103,6 +104,26 @@ func describeExpectations(expectations ...Expectation) string {
 		descriptions = append(descriptions, e.Description)
 	}
 	return strings.Join(descriptions, "\n")
+}
+
+// Not inverts the sense of an expectation: a met expectation is unmet, and an
+// unmet expectation is met.
+func Not(e Expectation) Expectation {
+	check := func(s State) Verdict {
+		switch v := e.Check(s); v {
+		case Met:
+			return Unmet
+		case Unmet, Unmeetable:
+			return Met
+		default:
+			panic(fmt.Sprintf("unexpected verdict %v", v))
+		}
+	}
+	description := describeExpectations(e)
+	return Expectation{
+		Check:       check,
+		Description: fmt.Sprintf("not: %s", description),
+	}
 }
 
 // AnyOf returns an expectation that is satisfied when any of the given
@@ -206,6 +227,23 @@ func NoOutstandingWork() Expectation {
 	}
 }
 
+// ShownDocument asserts that the client has received a
+// ShowDocumentRequest for the given URI.
+func ShownDocument(uri protocol.URI) Expectation {
+	check := func(s State) Verdict {
+		for _, params := range s.showDocument {
+			if params.URI == uri {
+				return Met
+			}
+		}
+		return Unmet
+	}
+	return Expectation{
+		Check:       check,
+		Description: fmt.Sprintf("received window/showDocument for URI %s", uri),
+	}
+}
+
 // NoShownMessage asserts that the editor has not received a ShowMessage.
 func NoShownMessage(subString string) Expectation {
 	check := func(s State) Verdict {
@@ -274,11 +312,12 @@ func ShowMessageRequest(title string) Expectation {
 func (e *Env) DoneDiagnosingChanges() Expectation {
 	stats := e.Editor.Stats()
 	statsBySource := map[lsp.ModificationSource]uint64{
-		lsp.FromDidOpen:               stats.DidOpen,
-		lsp.FromDidChange:             stats.DidChange,
-		lsp.FromDidSave:               stats.DidSave,
-		lsp.FromDidChangeWatchedFiles: stats.DidChangeWatchedFiles,
-		lsp.FromDidClose:              stats.DidClose,
+		lsp.FromDidOpen:                stats.DidOpen,
+		lsp.FromDidChange:              stats.DidChange,
+		lsp.FromDidSave:                stats.DidSave,
+		lsp.FromDidChangeWatchedFiles:  stats.DidChangeWatchedFiles,
+		lsp.FromDidClose:               stats.DidClose,
+		lsp.FromDidChangeConfiguration: stats.DidChangeConfiguration,
 	}
 
 	var expected []lsp.ModificationSource
@@ -469,6 +508,10 @@ func NoErrorLogs() Expectation {
 // The count argument specifies the expected number of matching logs. If
 // atLeast is set, this is a lower bound, otherwise there must be exactly count
 // matching logs.
+//
+// Logs are asynchronous to other LSP messages, so this expectation should not
+// be used with combinators such as OnceMet or AfterChange that assert on
+// ordering with respect to other operations.
 func LogMatching(typ protocol.MessageType, re string, count int, atLeast bool) Expectation {
 	rec, err := regexp.Compile(re)
 	if err != nil {
@@ -484,6 +527,11 @@ func LogMatching(typ protocol.MessageType, re string, count int, atLeast bool) E
 		// Check for an exact or "at least" match.
 		if found == count || (found >= count && atLeast) {
 			return Met
+		}
+		// If we require an exact count, and have received more than expected, the
+		// expectation can never be met.
+		if found > count && !atLeast {
+			return Unmeetable
 		}
 		return Unmet
 	}
@@ -720,6 +768,17 @@ func WithMessage(substring string) DiagnosticFilter {
 		desc: fmt.Sprintf("with message containing %q", substring),
 		check: func(_ string, d protocol.Diagnostic) bool {
 			return strings.Contains(d.Message, substring)
+		},
+	}
+}
+
+// WithSeverityTags filters to diagnostics whose severity and tags match
+// the given expectation.
+func WithSeverityTags(diagName string, severity protocol.DiagnosticSeverity, tags []protocol.DiagnosticTag) DiagnosticFilter {
+	return DiagnosticFilter{
+		desc: fmt.Sprintf("with diagnostic %q with severity %q and tag %#q", diagName, severity, tags),
+		check: func(_ string, d protocol.Diagnostic) bool {
+			return d.Source == diagName && d.Severity == severity && cmp.Equal(d.Tags, tags)
 		},
 	}
 }

@@ -8,11 +8,13 @@ import (
 	"os"
 	"testing"
 
+	"uw/pkg/x/tools/gopls/internal/bug"
 	. "uw/pkg/x/tools/gopls/internal/lsp/regtest"
 	"uw/pkg/x/tools/internal/testenv"
 )
 
 func TestMain(m *testing.M) {
+	bug.PanicOnBugs = true
 	testenv.ExitIfSmallMachine()
 	os.Exit(m.Run())
 }

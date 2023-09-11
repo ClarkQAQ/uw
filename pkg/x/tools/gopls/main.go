@@ -19,10 +19,12 @@ import (
 
 	"uw/pkg/x/tools/gopls/internal/hooks"
 	"uw/pkg/x/tools/gopls/internal/lsp/cmd"
+	"uw/pkg/x/tools/gopls/internal/telemetry"
 	"uw/pkg/x/tools/internal/tool"
 )
 
 func main() {
+	telemetry.Start()
 	ctx := context.Background()
 	tool.Main(ctx, cmd.New("gopls", "", nil, hooks.Options), os.Args[1:])
 }

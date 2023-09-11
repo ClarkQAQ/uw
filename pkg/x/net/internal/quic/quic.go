@@ -19,6 +19,8 @@ const connIDLen = 8
 // Local values of various transport parameters.
 // https://www.rfc-editor.org/rfc/rfc9000.html#section-18.2
 const (
+	defaultMaxIdleTimeout = 30 * time.Second // max_idle_timeout
+
 	// The max_udp_payload_size transport parameter is the size of our
 	// network receive buffer.
 	//
@@ -33,11 +35,36 @@ const (
 
 	ackDelayExponent = 3                     // ack_delay_exponent
 	maxAckDelay      = 25 * time.Millisecond // max_ack_delay
+
+	// The active_conn_id_limit transport parameter is the maximum
+	// number of connection IDs from the peer we're willing to store.
+	//
+	// maxPeerActiveConnIDLimit is the maximum number of connection IDs
+	// we're willing to send to the peer.
+	//
+	// https://www.rfc-editor.org/rfc/rfc9000.html#section-18.2-6.2.1
+	activeConnIDLimit        = 2
+	maxPeerActiveConnIDLimit = 4
 )
 
 // Local timer granularity.
 // https://www.rfc-editor.org/rfc/rfc9002.html#section-6.1.2-6
 const timerGranularity = 1 * time.Millisecond
+
+// Minimum size of a UDP datagram sent by a client carrying an Initial packet.
+// https://www.rfc-editor.org/rfc/rfc9000#section-14.1
+const minimumClientInitialDatagramSize = 1200
+
+// Maximum number of streams of a given type which may be created.
+// https://www.rfc-editor.org/rfc/rfc9000.html#section-4.6-2
+const maxStreamsLimit = 1 << 60
+
+// Maximum number of streams we will allow the peer to create implicitly.
+// A stream ID that is used out of order results in all streams of that type
+// with lower-numbered IDs also being opened. To limit the amount of work we
+// will do in response to a single frame, we cap the peer's stream limit to
+// this value.
+const implicitStreamLimit = 100
 
 // A connSide distinguishes between the client and server sides of a connection.
 type connSide int8
@@ -55,6 +82,14 @@ func (s connSide) String() string {
 		return "server"
 	default:
 		return "BUG"
+	}
+}
+
+func (s connSide) peer() connSide {
+	if s == clientSide {
+		return serverSide
+	} else {
+		return clientSide
 	}
 }
 
@@ -88,6 +123,7 @@ type streamType uint8
 const (
 	bidiStream = streamType(iota)
 	uniStream
+	streamTypeCount
 )
 
 func (s streamType) String() string {

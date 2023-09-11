@@ -26,6 +26,7 @@ import (
 	"uw/pkg/x/tools/go/analysis/passes/composite"
 	"uw/pkg/x/tools/go/analysis/passes/copylock"
 	"uw/pkg/x/tools/go/analysis/passes/deepequalerrors"
+	"uw/pkg/x/tools/go/analysis/passes/defers"
 	"uw/pkg/x/tools/go/analysis/passes/directive"
 	"uw/pkg/x/tools/go/analysis/passes/errorsas"
 	"uw/pkg/x/tools/go/analysis/passes/fieldalignment"
@@ -38,6 +39,7 @@ import (
 	"uw/pkg/x/tools/go/analysis/passes/printf"
 	"uw/pkg/x/tools/go/analysis/passes/shadow"
 	"uw/pkg/x/tools/go/analysis/passes/shift"
+	"uw/pkg/x/tools/go/analysis/passes/slog"
 	"uw/pkg/x/tools/go/analysis/passes/sortslice"
 	"uw/pkg/x/tools/go/analysis/passes/stdmethods"
 	"uw/pkg/x/tools/go/analysis/passes/stringintconv"
@@ -50,6 +52,7 @@ import (
 	"uw/pkg/x/tools/go/analysis/passes/unsafeptr"
 	"uw/pkg/x/tools/go/analysis/passes/unusedresult"
 	"uw/pkg/x/tools/go/analysis/passes/unusedwrite"
+	"uw/pkg/x/tools/gopls/internal/lsp/analysis/deprecated"
 	"uw/pkg/x/tools/gopls/internal/lsp/analysis/embeddirective"
 	"uw/pkg/x/tools/gopls/internal/lsp/analysis/fillreturns"
 	"uw/pkg/x/tools/gopls/internal/lsp/analysis/fillstruct"
@@ -78,7 +81,7 @@ var (
 // DefaultOptions is the options that are used for Gopls execution independent
 // of any externally provided configuration (LSP initialization, command
 // invocation, etc.).
-func DefaultOptions() *Options {
+func DefaultOptions(overrides ...func(*Options)) *Options {
 	optionsOnce.Do(func() {
 		var commands []string
 		for _, c := range command.Commands {
@@ -102,6 +105,7 @@ func DefaultOptions() *Options {
 						protocol.SourceOrganizeImports: true,
 						protocol.QuickFix:              true,
 						protocol.RefactorRewrite:       true,
+						protocol.RefactorInline:        true,
 						protocol.RefactorExtract:       true,
 					},
 					Mod: {
@@ -124,14 +128,15 @@ func DefaultOptions() *Options {
 				},
 				UIOptions: UIOptions{
 					DiagnosticOptions: DiagnosticOptions{
-						DiagnosticsDelay: 1 * time.Second,
 						Annotations: map[Annotation]bool{
 							Bounds: true,
 							Escape: true,
 							Inline: true,
 							Nil:    true,
 						},
-						Vulncheck: ModeVulncheckOff,
+						Vulncheck:                 ModeVulncheckOff,
+						DiagnosticsDelay:          1 * time.Second,
+						AnalysisProgressReporting: true,
 					},
 					InlayHintOptions: InlayHintOptions{},
 					DocumentationOptions: DocumentationOptions{
@@ -162,14 +167,15 @@ func DefaultOptions() *Options {
 				},
 			},
 			InternalOptions: InternalOptions{
-				LiteralCompletions:      true,
-				TempModfile:             true,
-				CompleteUnimported:      true,
-				CompletionDocumentation: true,
-				DeepCompletion:          true,
-				ChattyDiagnostics:       true,
-				NewDiff:                 "both",
-				SubdirWatchPatterns:     SubdirWatchPatternsAuto,
+				LiteralCompletions:          true,
+				TempModfile:                 true,
+				CompleteUnimported:          true,
+				CompletionDocumentation:     true,
+				DeepCompletion:              true,
+				ChattyDiagnostics:           true,
+				NewDiff:                     "new",
+				SubdirWatchPatterns:         SubdirWatchPatternsAuto,
+				ReportAnalysisProgressAfter: 5 * time.Second,
 			},
 			Hooks: Hooks{
 				// TODO(adonovan): switch to new diff.Strings implementation.
@@ -183,7 +189,13 @@ func DefaultOptions() *Options {
 			},
 		}
 	})
-	return defaultOptions
+	options := defaultOptions.Clone()
+	for _, override := range overrides {
+		if override != nil {
+			override(options)
+		}
+	}
+	return options
 }
 
 // Options holds various configuration that affects Gopls execution, organized
@@ -194,6 +206,22 @@ type Options struct {
 	UserOptions
 	InternalOptions
 	Hooks
+}
+
+// IsAnalyzerEnabled reports whether an analyzer with the given name is
+// enabled.
+//
+// TODO(rfindley): refactor to simplify this function. We no longer need the
+// different categories of analyzer.
+func (opts *Options) IsAnalyzerEnabled(name string) bool {
+	for _, amap := range []map[string]*Analyzer{opts.DefaultAnalyzers, opts.TypeErrorAnalyzers, opts.ConvenienceAnalyzers, opts.StaticcheckAnalyzers} {
+		for _, analyzer := range amap {
+			if analyzer.Analyzer.Name == name && analyzer.IsEnabled(opts) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ClientOptions holds LSP-specific configuration that is provided by the
@@ -428,6 +456,17 @@ type DiagnosticOptions struct {
 	//
 	// This option must be set to a valid duration string, for example `"250ms"`.
 	DiagnosticsDelay time.Duration `status:"advanced"`
+
+	// AnalysisProgressReporting controls whether gopls sends progress
+	// notifications when construction of its index of analysis facts is taking a
+	// long time. Cancelling these notifications will cancel the indexing task,
+	// though it will restart after the next change in the workspace.
+	//
+	// When a package is opened for the first time and heavyweight analyses such as
+	// staticcheck are enabled, it can take a while to construct the index of
+	// analysis facts for all its dependencies. The index is cached in the
+	// filesystem, so subsequent analysis should be faster.
+	AnalysisProgressReporting bool
 }
 
 type InlayHintOptions struct {
@@ -540,7 +579,7 @@ type Hooks struct {
 // by the user.
 //
 // TODO(rfindley): even though these settings are not intended for
-// modification, we should surface them in our documentation.
+// modification, some of them should be surfaced in our documentation.
 type InternalOptions struct {
 	// LiteralCompletions controls whether literal candidates such as
 	// "&someStruct{}" are offered. Tests disable this flag to simplify
@@ -630,6 +669,12 @@ type InternalOptions struct {
 	// example, if like VS Code it drops file notifications), please file an
 	// issue.
 	SubdirWatchPatterns SubdirWatchPatterns
+
+	// ReportAnalysisProgressAfter sets the duration for gopls to wait before starting
+	// progress reporting for ongoing go/analysis passes.
+	//
+	// It is intended to be used for testing only.
+	ReportAnalysisProgressAfter time.Duration
 }
 
 type SubdirWatchPatterns string
@@ -1171,6 +1216,9 @@ func (o *Options) set(name string, value interface{}, seen map[string]struct{}) 
 	case "diagnosticsDelay":
 		result.setDuration(&o.DiagnosticsDelay)
 
+	case "analysisProgressReporting":
+		result.setBool(&o.AnalysisProgressReporting)
+
 	case "experimentalWatchedFileDelay":
 		result.deprecated("")
 
@@ -1207,6 +1255,9 @@ func (o *Options) set(name string, value interface{}, seen map[string]struct{}) 
 		); ok {
 			o.SubdirWatchPatterns = SubdirWatchPatterns(s)
 		}
+
+	case "reportAnalysisProgressAfter":
+		result.setDuration(&o.ReportAnalysisProgressAfter)
 
 	// Replaced settings.
 	case "experimentalDisabledAnalyses":
@@ -1265,14 +1316,6 @@ type SoftError struct {
 
 func (e *SoftError) Error() string {
 	return e.msg
-}
-
-// softErrorf reports an error that does not affect the functionality of gopls
-// (a warning in the UI).
-// The formatted message will be shown to the user unmodified.
-func (r *OptionResult) softErrorf(format string, values ...interface{}) {
-	msg := fmt.Sprintf(format, values...)
-	r.Error = &SoftError{msg}
 }
 
 // deprecated reports the current setting as deprecated. If 'replacement' is
@@ -1443,7 +1486,8 @@ func (r *OptionResult) setStringSlice(s *[]string) {
 func typeErrorAnalyzers() map[string]*Analyzer {
 	return map[string]*Analyzer{
 		fillreturns.Analyzer.Name: {
-			Analyzer:   fillreturns.Analyzer,
+			Analyzer: fillreturns.Analyzer,
+			// TODO(rfindley): is SourceFixAll even necessary here? Is that not implied?
 			ActionKind: []protocol.CodeActionKind{protocol.SourceFixAll, protocol.QuickFix},
 			Enabled:    true,
 		},
@@ -1467,6 +1511,8 @@ func typeErrorAnalyzers() map[string]*Analyzer {
 	}
 }
 
+// TODO(golang/go#61559): remove convenience analyzers now that they are not
+// used from the analysis framework.
 func convenienceAnalyzers() map[string]*Analyzer {
 	return map[string]*Analyzer{
 		fillstruct.Analyzer.Name: {
@@ -1476,10 +1522,9 @@ func convenienceAnalyzers() map[string]*Analyzer {
 			ActionKind: []protocol.CodeActionKind{protocol.RefactorRewrite},
 		},
 		stubmethods.Analyzer.Name: {
-			Analyzer:   stubmethods.Analyzer,
-			ActionKind: []protocol.CodeActionKind{protocol.RefactorRewrite},
-			Fix:        StubMethods,
-			Enabled:    true,
+			Analyzer: stubmethods.Analyzer,
+			Fix:      StubMethods,
+			Enabled:  true,
 		},
 		infertypeargs.Analyzer.Name: {
 			Analyzer:   infertypeargs.Analyzer,
@@ -1500,6 +1545,8 @@ func defaultAnalyzers() map[string]*Analyzer {
 		cgocall.Analyzer.Name:       {Analyzer: cgocall.Analyzer, Enabled: true},
 		composite.Analyzer.Name:     {Analyzer: composite.Analyzer, Enabled: true},
 		copylock.Analyzer.Name:      {Analyzer: copylock.Analyzer, Enabled: true},
+		defers.Analyzer.Name:        {Analyzer: defers.Analyzer, Enabled: true},
+		deprecated.Analyzer.Name:    {Analyzer: deprecated.Analyzer, Enabled: true, Severity: protocol.SeverityHint, Tag: []protocol.DiagnosticTag{protocol.Deprecated}},
 		directive.Analyzer.Name:     {Analyzer: directive.Analyzer, Enabled: true},
 		errorsas.Analyzer.Name:      {Analyzer: errorsas.Analyzer, Enabled: true},
 		httpresponse.Analyzer.Name:  {Analyzer: httpresponse.Analyzer, Enabled: true},
@@ -1509,6 +1556,7 @@ func defaultAnalyzers() map[string]*Analyzer {
 		nilfunc.Analyzer.Name:       {Analyzer: nilfunc.Analyzer, Enabled: true},
 		printf.Analyzer.Name:        {Analyzer: printf.Analyzer, Enabled: true},
 		shift.Analyzer.Name:         {Analyzer: shift.Analyzer, Enabled: true},
+		slog.Analyzer.Name:          {Analyzer: slog.Analyzer, Enabled: true},
 		stdmethods.Analyzer.Name:    {Analyzer: stdmethods.Analyzer, Enabled: true},
 		stringintconv.Analyzer.Name: {Analyzer: stringintconv.Analyzer, Enabled: true},
 		structtag.Analyzer.Name:     {Analyzer: structtag.Analyzer, Enabled: true},
@@ -1529,8 +1577,13 @@ func defaultAnalyzers() map[string]*Analyzer {
 		unusedparams.Analyzer.Name:     {Analyzer: unusedparams.Analyzer, Enabled: false},
 		unusedwrite.Analyzer.Name:      {Analyzer: unusedwrite.Analyzer, Enabled: false},
 		useany.Analyzer.Name:           {Analyzer: useany.Analyzer, Enabled: false},
-		embeddirective.Analyzer.Name:   {Analyzer: embeddirective.Analyzer, Enabled: true},
 		timeformat.Analyzer.Name:       {Analyzer: timeformat.Analyzer, Enabled: true},
+		embeddirective.Analyzer.Name: {
+			Analyzer:        embeddirective.Analyzer,
+			Enabled:         true,
+			Fix:             AddEmbedImport,
+			fixesDiagnostic: fixedByImportingEmbed,
+		},
 
 		// gofmt -s suite:
 		simplifycompositelit.Analyzer.Name: {

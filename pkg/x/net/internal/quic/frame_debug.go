@@ -120,7 +120,7 @@ type debugFrameAck struct {
 
 func parseDebugFrameAck(b []byte) (f debugFrameAck, n int) {
 	f.ranges = nil
-	_, f.ackDelay, n = consumeAckFrame(b, func(start, end packetNumber) {
+	_, f.ackDelay, n = consumeAckFrame(b, func(_ int, start, end packetNumber) {
 		f.ranges = append(f.ranges, i64range[packetNumber]{
 			start: start,
 			end:   end,
@@ -386,10 +386,7 @@ func (f debugFrameNewConnectionID) write(w *packetWriter) bool {
 
 // debugFrameRetireConnectionID is a NEW_CONNECTION_ID frame.
 type debugFrameRetireConnectionID struct {
-	seq           uint64
-	retirePriorTo uint64
-	connID        []byte
-	token         [16]byte
+	seq int64
 }
 
 func parseDebugFrameRetireConnectionID(b []byte) (f debugFrameRetireConnectionID, n int) {

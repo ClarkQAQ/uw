@@ -60,6 +60,15 @@ var repos = map[string]*repo{
 		inDir:  flag.String("kuma_dir", "", "if set, reuse this directory as kuma@v2.1.1"),
 	},
 
+	// A repo containing a very large package (./dataintegration).
+	"oracle": {
+		name:   "oracle",
+		url:    "https://github.com/oracle/oci-go-sdk.git",
+		commit: "v65.43.0",
+		short:  true,
+		inDir:  flag.String("oracle_dir", "", "if set, reuse this directory as oracle/oci-go-sdk@v65.43.0"),
+	},
+
 	// x/pkgsite is familiar and represents a common use case (a webserver). It
 	// also has a number of static non-go files and template files.
 	"pkgsite": {
@@ -107,7 +116,7 @@ func getRepo(tb testing.TB, name string) *repo {
 		tb.Fatalf("repo %s does not exist", name)
 	}
 	if !repo.short && testing.Short() {
-		tb.Skipf("large repo %s does not run whith -short", repo.name)
+		tb.Skipf("large repo %s does not run with -short", repo.name)
 	}
 	return repo
 }
@@ -186,7 +195,7 @@ func (r *repo) sharedEnv(tb testing.TB) *Env {
 
 		start := time.Now()
 		log.Printf("starting initial workspace load for %s", r.name)
-		ts, err := newGoplsServer(r.name)
+		ts, err := newGoplsConnector(profileArgs(r.name, false))
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -215,10 +224,11 @@ func (r *repo) sharedEnv(tb testing.TB) *Env {
 //
 // It is the caller's responsibility to call Close on the resulting Env when it
 // is no longer needed.
-func (r *repo) newEnv(tb testing.TB, name string, config fake.EditorConfig) *Env {
+func (r *repo) newEnv(tb testing.TB, config fake.EditorConfig, forOperation string, cpuProfile bool) *Env {
 	dir := r.getDir()
 
-	ts, err := newGoplsServer(name)
+	args := profileArgs(qualifiedName(r.name, forOperation), cpuProfile)
+	ts, err := newGoplsConnector(args)
 	if err != nil {
 		tb.Fatal(err)
 	}

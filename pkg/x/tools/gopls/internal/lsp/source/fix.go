@@ -13,10 +13,12 @@ import (
 
 	"uw/pkg/x/tools/go/analysis"
 	"uw/pkg/x/tools/gopls/internal/bug"
+	"uw/pkg/x/tools/gopls/internal/lsp/analysis/embeddirective"
 	"uw/pkg/x/tools/gopls/internal/lsp/analysis/fillstruct"
 	"uw/pkg/x/tools/gopls/internal/lsp/analysis/undeclaredname"
 	"uw/pkg/x/tools/gopls/internal/lsp/protocol"
 	"uw/pkg/x/tools/gopls/internal/span"
+	"uw/pkg/x/tools/internal/imports"
 )
 
 type (
@@ -33,6 +35,8 @@ type (
 	singleFileFixFunc func(fset *token.FileSet, start, end token.Pos, src []byte, file *ast.File, pkg *types.Package, info *types.Info) (*analysis.SuggestedFix, error)
 )
 
+// These strings identify kinds of suggested fix, both in Analyzer.Fix
+// and in the ApplyFix subcommand (see ExecuteCommand and ApplyFixArgs.Fix).
 const (
 	FillStruct        = "fill_struct"
 	StubMethods       = "stub_methods"
@@ -40,7 +44,9 @@ const (
 	ExtractVariable   = "extract_variable"
 	ExtractFunction   = "extract_function"
 	ExtractMethod     = "extract_method"
+	InlineCall        = "inline_call"
 	InvertIfCondition = "invert_if_condition"
+	AddEmbedImport    = "add_embed_import"
 )
 
 // suggestedFixes maps a suggested fix command id to its handler.
@@ -48,10 +54,12 @@ var suggestedFixes = map[string]SuggestedFixFunc{
 	FillStruct:        singleFile(fillstruct.SuggestedFix),
 	UndeclaredName:    singleFile(undeclaredname.SuggestedFix),
 	ExtractVariable:   singleFile(extractVariable),
+	InlineCall:        inlineCall,
 	ExtractFunction:   singleFile(extractFunction),
 	ExtractMethod:     singleFile(extractMethod),
 	InvertIfCondition: singleFile(invertIfCondition),
 	StubMethods:       stubSuggestedFixFunc,
+	AddEmbedImport:    addEmbedImport,
 }
 
 // singleFile calls analyzers that expect inputs for a single file
@@ -137,4 +145,51 @@ func ApplyFix(ctx context.Context, fix string, snapshot Snapshot, fh FileHandle,
 		edits = append(edits, *edit)
 	}
 	return edits, nil
+}
+
+// fixedByImportingEmbed returns true if diag can be fixed by addEmbedImport.
+func fixedByImportingEmbed(diag *Diagnostic) bool {
+	if diag == nil {
+		return false
+	}
+	return diag.Message == embeddirective.MissingImportMessage
+}
+
+// addEmbedImport adds a missing embed "embed" import with blank name.
+func addEmbedImport(ctx context.Context, snapshot Snapshot, fh FileHandle, rng protocol.Range) (*token.FileSet, *analysis.SuggestedFix, error) {
+	pkg, pgf, err := NarrowestPackageForFile(ctx, snapshot, fh.URI())
+	if err != nil {
+		return nil, nil, fmt.Errorf("narrow pkg: %w", err)
+	}
+
+	// Like source.AddImport, but with _ as Name and using our pgf.
+	protoEdits, err := ComputeOneImportFixEdits(snapshot, pgf, &imports.ImportFix{
+		StmtInfo: imports.ImportInfo{
+			ImportPath: "embed",
+			Name:       "_",
+		},
+		FixType: imports.AddImport,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("compute edits: %w", err)
+	}
+
+	var edits []analysis.TextEdit
+	for _, e := range protoEdits {
+		start, end, err := pgf.RangePos(e.Range)
+		if err != nil {
+			return nil, nil, fmt.Errorf("map range: %w", err)
+		}
+		edits = append(edits, analysis.TextEdit{
+			Pos:     start,
+			End:     end,
+			NewText: []byte(e.NewText),
+		})
+	}
+
+	fix := &analysis.SuggestedFix{
+		Message:   "Add embed import",
+		TextEdits: edits,
+	}
+	return pkg.FileSet(), fix, nil
 }

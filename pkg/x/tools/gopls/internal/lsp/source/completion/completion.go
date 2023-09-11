@@ -302,10 +302,6 @@ type Selection struct {
 	mapper             *protocol.Mapper
 }
 
-func (p Selection) Content() string {
-	return p.content
-}
-
 func (p Selection) Range() (protocol.Range, error) {
 	return p.mapper.PosRange(p.tokFile, p.start, p.end)
 }
@@ -512,7 +508,7 @@ func Completion(ctx context.Context, snapshot source.Snapshot, fh source.FileHan
 	scopes := source.CollectScopes(pkg.GetTypesInfo(), path, pos)
 	scopes = append(scopes, pkg.GetTypes().Scope(), types.Universe)
 
-	opts := snapshot.View().Options()
+	opts := snapshot.Options()
 	c := &completer{
 		pkg:      pkg,
 		snapshot: snapshot,
@@ -1185,14 +1181,33 @@ func (c *completer) selector(ctx context.Context, sel *ast.SelectorExpr) error {
 	if err != nil {
 		return err
 	}
-	var paths []string
-	known := make(map[source.PackagePath][]*source.Metadata) // may include test variant
+	known := make(map[source.PackagePath]*source.Metadata)
 	for _, m := range all {
-		if m.IsIntermediateTestVariant() || m.Name == "main" || !filter(m) {
+		if m.Name == "main" {
+			continue // not importable
+		}
+		if m.IsIntermediateTestVariant() {
 			continue
 		}
-		known[m.PkgPath] = append(known[m.PkgPath], m)
-		paths = append(paths, string(m.PkgPath))
+		// The only test variant we admit is "p [p.test]"
+		// when we are completing within "p_test [p.test]",
+		// as in that case we would like to offer completions
+		// of the test variants' additional symbols.
+		if m.ForTest != "" && c.pkg.Metadata().PkgPath != m.ForTest+"_test" {
+			continue
+		}
+		if !filter(m) {
+			continue
+		}
+		// Prefer previous entry unless this one is its test variant.
+		if m.ForTest != "" || known[m.PkgPath] == nil {
+			known[m.PkgPath] = m
+		}
+	}
+
+	paths := make([]string, 0, len(known))
+	for path := range known {
+		paths = append(paths, string(path))
 	}
 
 	// Rank import paths as goimports would.
@@ -1281,33 +1296,46 @@ func (c *completer) selector(ctx context.Context, sel *ast.SelectorExpr) error {
 			if fn != nil {
 				var sn snippet.Builder
 				sn.WriteText(id.Name)
-				sn.WriteText("(")
 
-				var cfg printer.Config // slight overkill
-				var nparams int
-				param := func(name string, typ ast.Expr) {
-					if nparams > 0 {
-						sn.WriteText(", ")
-					}
-					nparams++
-					sn.WritePlaceholder(func(b *snippet.Builder) {
-						var buf strings.Builder
-						buf.WriteString(name)
-						buf.WriteByte(' ')
-						cfg.Fprint(&buf, token.NewFileSet(), typ)
-						b.WriteText(buf.String())
-					})
-				}
-				for _, field := range fn.Type.Params.List {
-					if field.Names != nil {
-						for _, name := range field.Names {
-							param(name.Name, field.Type)
+				paramList := func(open, close string, list *ast.FieldList) {
+					if list != nil {
+						var cfg printer.Config // slight overkill
+						var nparams int
+						param := func(name string, typ ast.Expr) {
+							if nparams > 0 {
+								sn.WriteText(", ")
+							}
+							nparams++
+							if c.opts.placeholders {
+								sn.WritePlaceholder(func(b *snippet.Builder) {
+									var buf strings.Builder
+									buf.WriteString(name)
+									buf.WriteByte(' ')
+									cfg.Fprint(&buf, token.NewFileSet(), typ)
+									b.WriteText(buf.String())
+								})
+							} else {
+								sn.WriteText(name)
+							}
 						}
-					} else {
-						param("_", field.Type)
+
+						sn.WriteText(open)
+						for _, field := range list.List {
+							if field.Names != nil {
+								for _, name := range field.Names {
+									param(name.Name, field.Type)
+								}
+							} else {
+								param("_", field.Type)
+							}
+						}
+						sn.WriteText(close)
 					}
 				}
-				sn.WriteText(")")
+
+				paramList("[", "]", typeparams.ForFuncType(fn.Type))
+				paramList("(", ")", fn.Type.Params)
+
 				item.snippet = &sn
 			}
 
@@ -1324,14 +1352,12 @@ func (c *completer) selector(ctx context.Context, sel *ast.SelectorExpr) error {
 	// Extract the package-level candidates using a quick parse.
 	var g errgroup.Group
 	for _, path := range paths {
-		for _, m := range known[source.PackagePath(path)] {
-			m := m
-			for _, uri := range m.CompiledGoFiles {
-				uri := uri
-				g.Go(func() error {
-					return quickParse(uri, m)
-				})
-			}
+		m := known[source.PackagePath(path)]
+		for _, uri := range m.CompiledGoFiles {
+			uri := uri
+			g.Go(func() error {
+				return quickParse(uri, m)
+			})
 		}
 	}
 	if err := g.Wait(); err != nil {

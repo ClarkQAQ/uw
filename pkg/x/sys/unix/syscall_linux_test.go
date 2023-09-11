@@ -444,6 +444,24 @@ func TestPselect(t *testing.T) {
 	}
 }
 
+func TestPselectWithSigmask(t *testing.T) {
+	var sigmask unix.Sigset_t
+	sigmask.Val[0] |= 1 << (uint(unix.SIGUSR1) - 1)
+	for {
+		n, err := unix.Pselect(0, nil, nil, nil, &unix.Timespec{Sec: 0, Nsec: 0}, &sigmask)
+		if err == unix.EINTR {
+			t.Logf("Pselect interrupted")
+			continue
+		} else if err != nil {
+			t.Fatalf("Pselect: %v", err)
+		}
+		if n != 0 {
+			t.Fatalf("Pselect: got %v ready file descriptors, expected 0", n)
+		}
+		break
+	}
+}
+
 func TestSchedSetaffinity(t *testing.T) {
 	var newMask unix.CPUSet
 	newMask.Zero()
@@ -968,13 +986,7 @@ func TestOpenat2(t *testing.T) {
 	}
 
 	// prepare
-	tempDir, err := ioutil.TempDir("", t.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	subdir := filepath.Join(tempDir, "dir")
+	subdir := filepath.Join(t.TempDir(), "dir")
 	if err := os.Mkdir(subdir, 0755); err != nil {
 		t.Fatal(err)
 	}

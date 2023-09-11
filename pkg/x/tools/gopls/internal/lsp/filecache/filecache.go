@@ -60,10 +60,11 @@ type memKey struct {
 	key  [32]byte
 }
 
-// Get retrieves from the cache and returns a newly allocated
-// copy of the value most recently supplied to Set(kind, key),
-// possibly by another process.
+// Get retrieves from the cache and returns the value most recently
+// supplied to Set(kind, key), possibly by another process.
 // Get returns ErrNotFound if the value was not found.
+//
+// Callers should not modify the returned array.
 func Get(kind string, key [32]byte) ([]byte, error) {
 	// First consult the read-through memory cache.
 	// Note that memory cache hits do not update the times
@@ -140,6 +141,12 @@ var ErrNotFound = fmt.Errorf("not found")
 func Set(kind string, key [32]byte, value []byte) error {
 	memCache.Set(memKey{kind, key}, value, len(value))
 
+	// Set the active event to wake up the GC.
+	select {
+	case active <- struct{}{}:
+	default:
+	}
+
 	iolimit <- struct{}{}        // acquire a token
 	defer func() { <-iolimit }() // release a token
 
@@ -180,6 +187,10 @@ func Set(kind string, key [32]byte, value []byte) error {
 	return nil
 }
 
+// The active 1-channel is a selectable resettable event
+// indicating recent cache activity.
+var active = make(chan struct{}, 1)
+
 // writeFileNoTrunc is like os.WriteFile but doesn't truncate until
 // after the write, so that racing writes of the same data are idempotent.
 func writeFileNoTrunc(filename string, data []byte, perm os.FileMode) error {
@@ -207,17 +218,18 @@ var iolimit = make(chan struct{}, 128) // counting semaphore to limit I/O concur
 
 var budget int64 = 1e9 // 1GB
 
-// SetBudget sets a soft limit on disk usage of files in the cache (in
-// bytes) and returns the previous value. Supplying a negative value
-// queries the current value without changing it.
+// SetBudget sets a soft limit on disk usage of regular files in the
+// cache (in bytes) and returns the previous value. Supplying a
+// negative value queries the current value without changing it.
 //
 // If two gopls processes have different budgets, the one with the
 // lower budget will collect garbage more actively, but both will
 // observe the effect.
 //
 // Even in the steady state, the storage usage reported by the 'du'
-// command may exceed the budget by as much as 50-70% due to the
-// overheads of directories and the effects of block quantization.
+// command may exceed the budget by as much as a factor of 3 due to
+// the overheads of directories and the effects of block quantization,
+// which are especially pronounced for the small index files.
 func SetBudget(new int64) (old int64) {
 	if new < 0 {
 		return atomic.LoadInt64(&budget)
@@ -291,7 +303,7 @@ func SetBudget(new int64) (old int64) {
 // In particular, each gopls process attempts to garbage collect
 // the entire gopls directory so that newer binaries can clean up
 // after older ones: in the development cycle especially, new
-// new versions may be created frequently.
+// versions may be created frequently.
 func filename(kind string, key [32]byte) (string, error) {
 	base := fmt.Sprintf("%x-%s", key, kind)
 	dir, err := getCacheDir()
@@ -387,20 +399,23 @@ func hashExecutable() (hash [32]byte, err error) {
 func gc(goplsDir string) {
 	// period between collections
 	//
-	// This was increased from 1 minute as an immediate measure to
-	// reduce the CPU cost of gopls when idle, which was around
-	// 15% of a core (#61049). A better solution might be to avoid
-	// walking the entire tree every period. e.g. walk only the
-	// subtree corresponding to this gopls executable every period,
-	// and the subtrees for other gopls instances every hour.
-	const period = 5 * time.Minute
+	// Originally the period was always 1 minute, but this
+	// consumed 15% of a CPU core when idle (#61049).
+	//
+	// The reason for running collections even when idle is so
+	// that long lived gopls sessions eventually clean up the
+	// caches created by defunct executables.
+	const (
+		minPeriod = 5 * time.Minute // when active
+		maxPeriod = 6 * time.Hour   // when idle
+	)
 
 	// Sleep statDelay*batchSize between stats to smooth out I/O.
 	//
 	// The constants below were chosen using the following heuristics:
 	//  - 1GB of filecache is on the order of ~100-200k files, in which case
-	//    100μs delay per file introduces 10-20s of additional walk time, less
-	//    than the 1m gc period.
+	//    100μs delay per file introduces 10-20s of additional walk time,
+	//    less than the minPeriod.
 	//  - Processing batches of stats at once is much more efficient than
 	//    sleeping after every stat (due to OS optimizations).
 	const statDelay = 100 * time.Microsecond // average delay between stats, to smooth out I/O
@@ -488,7 +503,8 @@ func gc(goplsDir string) {
 		}
 		files = nil // release memory before sleep
 
-		time.Sleep(period)
+		// Wait unconditionally for the minimum period.
+		time.Sleep(minPeriod)
 
 		// Once only, delete all directories.
 		// This will succeed only for the empty ones,
@@ -523,6 +539,13 @@ func gc(goplsDir string) {
 			if debug {
 				log.Printf("deleted %d empty directories", deleted)
 			}
+		}
+
+		// Wait up to the max period,
+		// or for Set activity in this process.
+		select {
+		case <-active:
+		case <-time.After(maxPeriod):
 		}
 	}
 }

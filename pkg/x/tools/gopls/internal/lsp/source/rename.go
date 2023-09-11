@@ -152,7 +152,7 @@ func PrepareRename(ctx context.Context, snapshot Snapshot, f FileHandle, pp prot
 func prepareRenamePackageName(ctx context.Context, snapshot Snapshot, pgf *ParsedGoFile) (*PrepareItem, error) {
 	// Does the client support file renaming?
 	fileRenameSupported := false
-	for _, op := range snapshot.View().Options().SupportedResourceOperations {
+	for _, op := range snapshot.Options().SupportedResourceOperations {
 		if op == protocol.Rename {
 			fileRenameSupported = true
 			break
@@ -343,24 +343,42 @@ func renameOrdinary(ctx context.Context, snapshot Snapshot, f FileHandle, pp pro
 	// Find objectpath, if object is exported ("" otherwise).
 	var declObjPath objectpath.Path
 	if obj.Exported() {
-		// objectpath.For requires the origin of a generic
-		// function or type, not an instantiation (a bug?).
-		// Unfortunately we can't call {Func,TypeName}.Origin
-		// as these are not available in go/types@go1.18.
-		// So we take a scenic route.
+		// objectpath.For requires the origin of a generic function or type, not an
+		// instantiation (a bug?). Unfortunately we can't call Func.Origin as this
+		// is not available in go/types@go1.18. So we take a scenic route.
+		//
+		// Note that unlike Funcs, TypeNames are always canonical (they are "left"
+		// of the type parameters, unlike methods).
 		switch obj.(type) { // avoid "obj :=" since cases reassign the var
 		case *types.TypeName:
-			if named, ok := obj.Type().(*types.Named); ok {
-				obj = named.Obj()
+			if _, ok := obj.Type().(*typeparams.TypeParam); ok {
+				// As with capitalized function parameters below, type parameters are
+				// local.
+				goto skipObjectPath
 			}
 		case *types.Func:
 			obj = funcOrigin(obj.(*types.Func))
 		case *types.Var:
 			// TODO(adonovan): do vars need the origin treatment too? (issue #58462)
+
+			// Function parameter and result vars that are (unusually)
+			// capitalized are technically exported, even though they
+			// cannot be referenced, because they may affect downstream
+			// error messages. But we can safely treat them as local.
+			//
+			// This is not merely an optimization: the renameExported
+			// operation gets confused by such vars. It finds them from
+			// objectpath, the classifies them as local vars, but as
+			// they came from export data they lack syntax and the
+			// correct scope tree (issue #61294).
+			if !obj.(*types.Var).IsField() && !isPackageLevel(obj) {
+				goto skipObjectPath
+			}
 		}
 		if path, err := objectpath.For(obj); err == nil {
 			declObjPath = path
 		}
+	skipObjectPath:
 	}
 
 	// Nonexported? Search locally.
@@ -569,12 +587,15 @@ func renameExported(ctx context.Context, snapshot Snapshot, pkgs []Package, decl
 			}
 			obj, err := objectpath.Object(p, t.obj)
 			if err != nil {
-				// Though this can happen with regular export data
-				// due to trimming of inconsequential objects,
-				// it can't happen if we load dependencies from full
-				// syntax (as today) or shallow export data (soon),
-				// as both are complete.
-				bug.Reportf("objectpath.Object(%v, %v) failed: %v", p, t.obj, err)
+				// Possibly a method or an unexported type
+				// that is not reachable through export data?
+				// See https://github.com/golang/go/issues/60789.
+				//
+				// TODO(adonovan): it seems unsatisfactory that Object
+				// should return an error for a "valid" path. Perhaps
+				// we should define such paths as invalid and make
+				// objectpath.For compute reachability?
+				// Would that be a compatible change?
 				continue
 			}
 			objects = append(objects, obj)
@@ -706,7 +727,7 @@ func renamePackageName(ctx context.Context, s Snapshot, f FileHandle, newName Pa
 		}
 
 		// Calculate the edits to be made due to the change.
-		edits := s.View().Options().ComputeEdits(string(pm.Mapper.Content), string(newContent))
+		edits := s.Options().ComputeEdits(string(pm.Mapper.Content), string(newContent))
 		renamingEdits[pm.URI] = append(renamingEdits[pm.URI], edits...)
 	}
 
@@ -756,7 +777,7 @@ func renamePackage(ctx context.Context, s Snapshot, f FileHandle, newName Packag
 	edits := make(map[span.URI][]diff.Edit)
 	for _, m := range allMetadata {
 		// Special case: x_test packages for the renamed package will not have the
-		// package path as as a dir prefix, but still need their package clauses
+		// package path as a dir prefix, but still need their package clauses
 		// renamed.
 		if m.PkgPath == oldPkgPath+"_test" {
 			if err := renamePackageClause(ctx, m, s, newName+"_test", edits); err != nil {
@@ -1033,17 +1054,11 @@ func (r *renamer) update() (map[span.URI][]diff.Edit, error) {
 	// shouldUpdate reports whether obj is one of (or an
 	// instantiation of one of) the target objects.
 	shouldUpdate := func(obj types.Object) bool {
-		if r.objsToUpdate[obj] {
-			return true
-		}
-		if fn, ok := obj.(*types.Func); ok && r.objsToUpdate[funcOrigin(fn)] {
-			return true
-		}
-		return false
+		return containsOrigin(r.objsToUpdate, obj)
 	}
 
 	// Find all identifiers in the package that define or use a
-	// renamed object. We iterate over info as it is more efficent
+	// renamed object. We iterate over info as it is more efficient
 	// than calling ast.Inspect for each of r.pkg.CompiledGoFiles().
 	type item struct {
 		node  ast.Node // Ident, ImportSpec (obj=PkgName), or CaseClause (obj=Var)

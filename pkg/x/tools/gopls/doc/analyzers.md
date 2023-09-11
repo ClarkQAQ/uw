@@ -108,6 +108,37 @@ errors is discouraged.
 
 **Enabled by default.**
 
+## **defer**
+
+report common mistakes in defer statements
+
+The defer analyzer reports a diagnostic when a defer statement would
+result in a non-deferred call to time.Since, as experience has shown
+that this is nearly always a mistake.
+
+For example:
+
+	start := time.Now()
+	...
+	defer recordLatency(time.Since(start)) // error: call to time.Since is not deferred
+
+The correct code is:
+
+	defer func() { recordLatency(time.Since(start)) }()
+
+**Enabled by default.**
+
+## **deprecated**
+
+check for use of deprecated identifiers
+
+The deprecated analyzer looks for deprecated symbols and package imports.
+
+See https://go.dev/wiki/Deprecated to learn about Go's convention
+for documenting and signaling deprecated identifiers.
+
+**Enabled by default.**
+
 ## **directive**
 
 check Go toolchain directives such as //go:debug
@@ -130,10 +161,14 @@ buildtag analyzer.
 
 ## **embed**
 
-check for //go:embed directive import
+check //go:embed directive usage
 
-This analyzer checks that the embed package is imported when source code contains //go:embed comment directives.
-The embed package must be imported for //go:embed directives to function.import _ "embed".
+This analyzer checks that the embed package is imported if //go:embed
+directives are present, providing a suggested fix to add the import if
+it is missing.
+
+This analyzer also checks that //go:embed directives precede the
+declaration of a single variable.
 
 **Enabled by default.**
 
@@ -459,6 +494,24 @@ This is one of the simplifications that "gofmt -s" applies.
 
 **Enabled by default.**
 
+## **slog**
+
+check for invalid structured logging calls
+
+The slog checker looks for calls to functions from the log/slog
+package that take alternating key-value pairs. It reports calls
+where an argument in a key position is neither a string nor a
+slog.Attr, and where a final key is missing its value.
+For example,it would report
+
+	slog.Warn("message", 11, "k") // slog.Warn arg "11" should be a string or a slog.Attr
+
+and
+
+	slog.Info("message", "k1", v1, "k2") // call to slog.Info missing a final value
+
+**Enabled by default.**
+
 ## **sortslice**
 
 check the argument type of sort.Slice
@@ -597,7 +650,7 @@ any parameters that are not being used.
 
 To reduce false positives it ignores:
 - methods
-- parameters that do not have a name or are underscored
+- parameters that do not have a name or have the name '_' (the blank identifier)
 - functions in test files
 - functions with empty bodies or those with just a return stmt
 

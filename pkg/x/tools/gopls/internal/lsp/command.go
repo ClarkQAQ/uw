@@ -11,11 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 	"sort"
 	"strings"
 	"time"
@@ -43,7 +43,7 @@ func (s *Server) executeCommand(ctx context.Context, params *protocol.ExecuteCom
 	defer done()
 
 	var found bool
-	for _, name := range s.session.Options().SupportedCommands {
+	for _, name := range s.Options().SupportedCommands {
 		if name == params.Command {
 			found = true
 			break
@@ -96,7 +96,7 @@ func (c *commandHandler) run(ctx context.Context, cfg commandConfig, run command
 	if cfg.requireSave {
 		var unsaved []string
 		for _, overlay := range c.s.session.Overlays() {
-			if !overlay.Saved() {
+			if !overlay.SameContentsOnDisk() {
 				unsaved = append(unsaved, overlay.URI().Filename())
 			}
 		}
@@ -426,7 +426,7 @@ func dropDependency(snapshot source.Snapshot, pm *source.ParsedModule, modulePat
 		return nil, err
 	}
 	// Calculate the edits to be made due to the change.
-	diff := snapshot.View().Options().ComputeEdits(string(pm.Mapper.Content), string(newContent))
+	diff := snapshot.Options().ComputeEdits(string(pm.Mapper.Content), string(newContent))
 	return source.ToProtocolEdits(pm.Mapper, diff)
 }
 
@@ -628,12 +628,12 @@ func collectFileEdits(ctx context.Context, snapshot source.Snapshot, uri span.UR
 	// file and leave it unsaved. We would rather apply the changes directly,
 	// especially to go.sum, which should be mostly invisible to the user.
 	if !snapshot.IsOpen(uri) {
-		err := ioutil.WriteFile(uri.Filename(), newContent, 0666)
+		err := os.WriteFile(uri.Filename(), newContent, 0666)
 		return nil, err
 	}
 
 	m := protocol.NewMapper(fh.URI(), oldContent)
-	diff := snapshot.View().Options().ComputeEdits(string(oldContent), string(newContent))
+	diff := snapshot.Options().ComputeEdits(string(oldContent), string(newContent))
 	edits, err := source.ToProtocolEdits(m, diff)
 	if err != nil {
 		return nil, err
@@ -839,6 +839,49 @@ func (c *commandHandler) StartDebugging(ctx context.Context, args command.Debugg
 		return result, fmt.Errorf("starting debug server: %w", err)
 	}
 	result.URLs = []string{"http://" + listenedAddr}
+	openClientBrowser(ctx, c.s.client, result.URLs[0])
+	return result, nil
+}
+
+func (c *commandHandler) StartProfile(ctx context.Context, args command.StartProfileArgs) (result command.StartProfileResult, _ error) {
+	file, err := os.CreateTemp("", "gopls-profile-*")
+	if err != nil {
+		return result, fmt.Errorf("creating temp profile file: %v", err)
+	}
+
+	c.s.ongoingProfileMu.Lock()
+	defer c.s.ongoingProfileMu.Unlock()
+
+	if c.s.ongoingProfile != nil {
+		file.Close() // ignore error
+		return result, fmt.Errorf("profile already started (for %q)", c.s.ongoingProfile.Name())
+	}
+
+	if err := pprof.StartCPUProfile(file); err != nil {
+		file.Close() // ignore error
+		return result, fmt.Errorf("starting profile: %v", err)
+	}
+
+	c.s.ongoingProfile = file
+	return result, nil
+}
+
+func (c *commandHandler) StopProfile(ctx context.Context, args command.StopProfileArgs) (result command.StopProfileResult, _ error) {
+	c.s.ongoingProfileMu.Lock()
+	defer c.s.ongoingProfileMu.Unlock()
+
+	prof := c.s.ongoingProfile
+	c.s.ongoingProfile = nil
+
+	if prof == nil {
+		return result, fmt.Errorf("no ongoing profile")
+	}
+
+	pprof.StopCPUProfile()
+	if err := prof.Close(); err != nil {
+		return result, fmt.Errorf("closing profile file: %v", err)
+	}
+	result.File = prof.Name()
 	return result, nil
 }
 
@@ -856,7 +899,7 @@ type pkgLoadConfig struct {
 func (c *commandHandler) FetchVulncheckResult(ctx context.Context, arg command.URIArg) (map[protocol.DocumentURI]*govulncheck.Result, error) {
 	ret := map[protocol.DocumentURI]*govulncheck.Result{}
 	err := c.run(ctx, commandConfig{forURI: arg.URI}, func(ctx context.Context, deps commandDeps) error {
-		if deps.snapshot.View().Options().Vulncheck == source.ModeVulncheckImports {
+		if deps.snapshot.Options().Vulncheck == source.ModeVulncheckImports {
 			for _, modfile := range deps.snapshot.ModFiles() {
 				res, err := deps.snapshot.ModVuln(ctx, modfile)
 				if err != nil {
@@ -893,8 +936,7 @@ func (c *commandHandler) RunGovulncheck(ctx context.Context, args command.Vulnch
 	}, func(ctx context.Context, deps commandDeps) error {
 		tokenChan <- deps.work.Token()
 
-		view := deps.snapshot.View()
-		opts := view.Options()
+		opts := deps.snapshot.Options()
 		// quickly test if gopls is compiled to support govulncheck
 		// by checking vulncheck.Main. Alternatively, we can continue and
 		// let the `gopls vulncheck` command fail. This is lighter-weight.
@@ -1113,7 +1155,7 @@ func (c *commandHandler) RunGoWorkCommand(ctx context.Context, args command.RunG
 			if err != nil {
 				return fmt.Errorf("reading current go.work file: %v", err)
 			}
-			if !fh.Saved() {
+			if !fh.SameContentsOnDisk() {
 				return fmt.Errorf("must save workspace file %s before running go work commands", goworkURI)
 			}
 		} else {
@@ -1143,4 +1185,48 @@ func (c *commandHandler) invokeGoWork(ctx context.Context, viewDir, gowork strin
 		return fmt.Errorf("running go work command: %v", err)
 	}
 	return nil
+}
+
+// openClientBrowser causes the LSP client to open the specified URL
+// in an external browser.
+func openClientBrowser(ctx context.Context, cli protocol.Client, url protocol.URI) {
+	showDocumentImpl(ctx, cli, url, nil)
+}
+
+// openClientEditor causes the LSP client to open the specified document
+// and select the indicated range.
+func openClientEditor(ctx context.Context, cli protocol.Client, loc protocol.Location) {
+	showDocumentImpl(ctx, cli, protocol.URI(loc.URI), &loc.Range)
+}
+
+func showDocumentImpl(ctx context.Context, cli protocol.Client, url protocol.URI, rangeOpt *protocol.Range) {
+	// In principle we shouldn't send a showDocument request to a
+	// client that doesn't support it, as reported by
+	// ShowDocumentClientCapabilities. But even clients that do
+	// support it may defer the real work of opening the document
+	// asynchronously, to avoid deadlocks due to rentrancy.
+	//
+	// For example: client sends request to server; server sends
+	// showDocument to client; client opens editor; editor causes
+	// new RPC to be sent to server, which is still busy with
+	// previous request. (This happens in eglot.)
+	//
+	// So we can't rely on the success/failure information.
+	// That's the reason this function doesn't return an error.
+
+	// "External" means run the system-wide handler (e.g. open(1)
+	// on macOS or xdg-open(1) on Linux) for this URL, ignoring
+	// TakeFocus and Selection. Note that this may still end up
+	// opening the same editor (e.g. VSCode) for a file: URL.
+	res, err := cli.ShowDocument(ctx, &protocol.ShowDocumentParams{
+		URI:       url,
+		External:  rangeOpt == nil,
+		TakeFocus: true,
+		Selection: rangeOpt, // optional
+	})
+	if err != nil {
+		event.Error(ctx, "client.showDocument: %v", err)
+	} else if res != nil && !res.Success {
+		event.Log(ctx, fmt.Sprintf("client declined to open document %v", url))
+	}
 }

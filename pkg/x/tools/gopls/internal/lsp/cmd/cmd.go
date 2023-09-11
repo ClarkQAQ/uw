@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"uw/pkg/x/tools/gopls/internal/lsp"
+	"uw/pkg/x/tools/gopls/internal/lsp/browser"
 	"uw/pkg/x/tools/gopls/internal/lsp/cache"
 	"uw/pkg/x/tools/gopls/internal/lsp/debug"
 	"uw/pkg/x/tools/gopls/internal/lsp/filecache"
@@ -29,6 +30,7 @@ import (
 	"uw/pkg/x/tools/gopls/internal/lsp/protocol"
 	"uw/pkg/x/tools/gopls/internal/lsp/source"
 	"uw/pkg/x/tools/gopls/internal/span"
+	"uw/pkg/x/tools/internal/diff"
 	"uw/pkg/x/tools/internal/jsonrpc2"
 	"uw/pkg/x/tools/internal/tool"
 	"uw/pkg/x/tools/internal/xcontext"
@@ -74,6 +76,26 @@ type Application struct {
 	// PrepareOptions is called to update the options when a new view is built.
 	// It is primarily to allow the behavior of gopls to be modified by hooks.
 	PrepareOptions func(*source.Options)
+
+	// editFlags holds flags that control how file edit operations
+	// are applied, in particular when the server makes an ApplyEdits
+	// downcall to the client. Present only for commands that apply edits.
+	editFlags *EditFlags
+}
+
+// EditFlags defines flags common to {fix,format,imports,rename}
+// that control how edits are applied to the client's files.
+//
+// The type is exported for flag reflection.
+//
+// The -write, -diff, and -list flags are orthogonal but any
+// of them suppresses the default behavior, which is to print
+// the edited file contents.
+type EditFlags struct {
+	Write    bool `flag:"w,write" help:"write edited content to source files"`
+	Preserve bool `flag:"preserve" help:"with -write, make copies of original files"`
+	Diff     bool `flag:"d,diff" help:"display diffs instead of edited file content"`
+	List     bool `flag:"l,list" help:"display names of edited files"`
 }
 
 func (app *Application) verbose() bool {
@@ -294,7 +316,8 @@ func (app *Application) connect(ctx context.Context, onProgress func(*protocol.P
 	switch {
 	case app.Remote == "":
 		client := newClient(app, onProgress)
-		server := lsp.NewServer(cache.NewSession(ctx, cache.New(nil), app.options), client)
+		options := source.DefaultOptions(app.options)
+		server := lsp.NewServer(cache.NewSession(ctx, cache.New(nil)), client, options)
 		conn := newConnection(server, client)
 		if err := conn.initialize(protocol.WithClient(ctx, client), app.options); err != nil {
 			return nil, err
@@ -304,10 +327,7 @@ func (app *Application) connect(ctx context.Context, onProgress func(*protocol.P
 	case strings.HasPrefix(app.Remote, "internal@"):
 		internalMu.Lock()
 		defer internalMu.Unlock()
-		opts := source.DefaultOptions().Clone()
-		if app.options != nil {
-			app.options(opts)
-		}
+		opts := source.DefaultOptions(app.options)
 		key := fmt.Sprintf("%s %v %v %v", app.wd, opts.PreferredContentFormat, opts.HierarchicalDocumentSymbolSupport, opts.SymbolMatcher)
 		if c := internalConnections[key]; c != nil {
 			return c, nil
@@ -322,15 +342,6 @@ func (app *Application) connect(ctx context.Context, onProgress func(*protocol.P
 		return connection, nil
 	default:
 		return app.connectRemote(ctx, app.Remote)
-	}
-}
-
-// CloseTestConnections terminates shared connections used in command tests. It
-// should only be called from tests.
-func CloseTestConnections(ctx context.Context) {
-	for _, c := range internalConnections {
-		c.Shutdown(ctx)
-		c.Exit(ctx)
 	}
 }
 
@@ -363,10 +374,7 @@ func (c *connection) initialize(ctx context.Context, options func(*source.Option
 	params.Capabilities.Workspace.Configuration = true
 
 	// Make sure to respect configured options when sending initialize request.
-	opts := source.DefaultOptions().Clone()
-	if options != nil {
-		options(opts)
-	}
+	opts := source.DefaultOptions(options)
 	// If you add an additional option here, you must update the map key in connect.
 	params.Capabilities.TextDocument.Hover = &protocol.HoverClientCapabilities{
 		ContentFormat: []protocol.MarkupKind{opts.PreferredContentFormat},
@@ -402,6 +410,7 @@ type connection struct {
 	client *cmdClient
 }
 
+// cmdClient defines the protocol.Client interface behavior of the gopls CLI tool.
 type cmdClient struct {
 	app        *Application
 	onProgress func(*protocol.ProgressParams)
@@ -522,7 +531,87 @@ func (c *cmdClient) Configuration(ctx context.Context, p *protocol.ParamConfigur
 }
 
 func (c *cmdClient) ApplyEdit(ctx context.Context, p *protocol.ApplyWorkspaceEditParams) (*protocol.ApplyWorkspaceEditResult, error) {
-	return &protocol.ApplyWorkspaceEditResult{Applied: false, FailureReason: "not implemented"}, nil
+	if err := c.applyWorkspaceEdit(&p.Edit); err != nil {
+		return &protocol.ApplyWorkspaceEditResult{FailureReason: err.Error()}, nil
+	}
+	return &protocol.ApplyWorkspaceEditResult{Applied: true}, nil
+}
+
+// applyWorkspaceEdit applies a complete WorkspaceEdit to the client's
+// files, honoring the preferred edit mode specified by cli.app.editMode.
+// (Used by rename and by ApplyEdit downcalls.)
+func (cli *cmdClient) applyWorkspaceEdit(edit *protocol.WorkspaceEdit) error {
+	var orderedURIs []string
+	edits := map[span.URI][]protocol.TextEdit{}
+	for _, c := range edit.DocumentChanges {
+		if c.TextDocumentEdit != nil {
+			uri := fileURI(c.TextDocumentEdit.TextDocument.URI)
+			edits[uri] = append(edits[uri], c.TextDocumentEdit.Edits...)
+			orderedURIs = append(orderedURIs, string(uri))
+		}
+		if c.RenameFile != nil {
+			return fmt.Errorf("client does not support file renaming (%s -> %s)",
+				c.RenameFile.OldURI,
+				c.RenameFile.NewURI)
+		}
+	}
+	sort.Strings(orderedURIs)
+	for _, u := range orderedURIs {
+		uri := span.URIFromURI(u)
+		f := cli.openFile(uri)
+		if f.err != nil {
+			return f.err
+		}
+		if err := applyTextEdits(f.mapper, edits[uri], cli.app.editFlags); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// applyTextEdits applies a list of edits to the mapper file content,
+// using the preferred edit mode. It is a no-op if there are no edits.
+func applyTextEdits(mapper *protocol.Mapper, edits []protocol.TextEdit, flags *EditFlags) error {
+	if len(edits) == 0 {
+		return nil
+	}
+	newContent, renameEdits, err := source.ApplyProtocolEdits(mapper, edits)
+	if err != nil {
+		return err
+	}
+
+	filename := mapper.URI.Filename()
+
+	if flags.List {
+		fmt.Println(filename)
+	}
+
+	if flags.Write {
+		if flags.Preserve {
+			if err := os.Rename(filename, filename+".orig"); err != nil {
+				return err
+			}
+		}
+		if err := os.WriteFile(filename, newContent, 0644); err != nil {
+			return err
+		}
+	}
+
+	if flags.Diff {
+		unified, err := diff.ToUnified(filename+".orig", filename, string(mapper.Content), renameEdits)
+		if err != nil {
+			return err
+		}
+		fmt.Print(unified)
+	}
+
+	// No flags: just print edited file content.
+	// TODO(adonovan): how is this ever useful with multiple files?
+	if !(flags.List || flags.Write || flags.Diff) {
+		os.Stdout.Write(newContent)
+	}
+
+	return nil
 }
 
 func (c *cmdClient) PublishDiagnostics(ctx context.Context, p *protocol.PublishDiagnosticsParams) error {
@@ -537,18 +626,22 @@ func (c *cmdClient) PublishDiagnostics(ctx context.Context, p *protocol.PublishD
 	c.filesMu.Lock()
 	defer c.filesMu.Unlock()
 
-	file := c.getFile(ctx, fileURI(p.URI))
+	file := c.getFile(fileURI(p.URI))
 	file.diagnostics = append(file.diagnostics, p.Diagnostics...)
 
 	// Perform a crude in-place deduplication.
 	// TODO(golang/go#60122): replace the ad-hoc gopls/diagnoseFiles
 	// non-standard request with support for textDocument/diagnostic,
 	// so that we don't need to do this de-duplication.
-	type key [5]interface{}
+	type key [6]interface{}
 	seen := make(map[key]bool)
 	out := file.diagnostics[:0]
 	for _, d := range file.diagnostics {
-		k := key{d.Range, d.Severity, d.Code, d.Source, d.Message}
+		var codeHref string
+		if desc := d.CodeDescription; desc != nil {
+			codeHref = desc.Href
+		}
+		k := key{d.Range, d.Severity, d.Code, codeHref, d.Source, d.Message}
 		if !seen[k] {
 			seen[k] = true
 			out = append(out, d)
@@ -566,8 +659,19 @@ func (c *cmdClient) Progress(_ context.Context, params *protocol.ProgressParams)
 	return nil
 }
 
-func (c *cmdClient) ShowDocument(context.Context, *protocol.ShowDocumentParams) (*protocol.ShowDocumentResult, error) {
-	return nil, nil
+func (c *cmdClient) ShowDocument(ctx context.Context, params *protocol.ShowDocumentParams) (*protocol.ShowDocumentResult, error) {
+	var success bool
+	if params.External {
+		// Open URI in external browser.
+		success = browser.Open(string(params.URI))
+	} else {
+		// Open file in editor, optionally taking focus and selecting a range.
+		// (cmdClient has no editor. Should it fork+exec $EDITOR?)
+		log.Printf("Server requested that client editor open %q (takeFocus=%t, selection=%+v)",
+			params.URI, params.TakeFocus, params.Selection)
+		success = true
+	}
+	return &protocol.ShowDocumentResult{Success: success}, nil
 }
 
 func (c *cmdClient) WorkDoneProgressCreate(context.Context, *protocol.WorkDoneProgressCreateParams) error {
@@ -590,7 +694,7 @@ func (c *cmdClient) InlineValueRefresh(context.Context) error {
 	return nil
 }
 
-func (c *cmdClient) getFile(ctx context.Context, uri span.URI) *cmdFile {
+func (c *cmdClient) getFile(uri span.URI) *cmdFile {
 	file, found := c.files[uri]
 	if !found || file.err != nil {
 		file = &cmdFile{
@@ -609,17 +713,17 @@ func (c *cmdClient) getFile(ctx context.Context, uri span.URI) *cmdFile {
 	return file
 }
 
-func (c *cmdClient) openFile(ctx context.Context, uri span.URI) *cmdFile {
+func (c *cmdClient) openFile(uri span.URI) *cmdFile {
 	c.filesMu.Lock()
 	defer c.filesMu.Unlock()
-	return c.getFile(ctx, uri)
+	return c.getFile(uri)
 }
 
 // TODO(adonovan): provide convenience helpers to:
 // - map a (URI, protocol.Range) to a MappedRange;
 // - parse a command-line argument to a MappedRange.
 func (c *connection) openFile(ctx context.Context, uri span.URI) (*cmdFile, error) {
-	file := c.client.openFile(ctx, uri)
+	file := c.client.openFile(uri)
 	if file.err != nil {
 		return nil, file.err
 	}

@@ -10,10 +10,10 @@ import (
 	"fmt"
 	"os"
 
+	"uw/pkg/x/tools/gopls/internal/lsp/protocol"
 	"uw/pkg/x/tools/internal/event"
 	"uw/pkg/x/tools/internal/gocommand"
 	jsonrpc2_v2 "uw/pkg/x/tools/internal/jsonrpc2_v2"
-	"uw/pkg/x/tools/gopls/internal/lsp/protocol"
 )
 
 func GoEnvMiddleware() (Middleware, error) {

@@ -25,6 +25,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -395,7 +396,6 @@ var importedObjectTests = []struct {
 	{"math.Pi", "const Pi untyped float"},
 	{"math.Sin", "func Sin(x float64) float64"},
 	{"go/ast.NotNilFilter", "func NotNilFilter(_ string, v reflect.Value) bool"},
-	{"go/internal/gcimporter.FindPkg", "func FindPkg(path string, srcDir string) (filename string, id string)"},
 
 	// interfaces
 	{"context.Context", "type Context interface{Deadline() (deadline time.Time, ok bool); Done() <-chan struct{}; Err() error; Value(key any) any}"},
@@ -770,6 +770,72 @@ func TestIssue51836(t *testing.T) {
 	_ = importPkg(t, "./testdata/aa", tmpdir)
 }
 
+func TestIssue61561(t *testing.T) {
+	testenv.NeedsGo1Point(t, 18) // requires generics
+
+	const src = `package p
+
+type I[P any] interface {
+	m(P)
+	n() P
+}
+
+type J = I[int]
+
+type StillBad[P any] *interface{b(P)}
+
+type K = StillBad[string]
+`
+	fset := token.NewFileSet()
+	f, err := goparser.ParseFile(fset, "p.go", src, 0)
+	if f == nil {
+		// Some test cases may have parse errors, but we must always have a
+		// file.
+		t.Fatalf("ParseFile returned nil file. Err: %v", err)
+	}
+
+	config := &types.Config{}
+	pkg1, err := config.Check("p", fset, []*ast.File{f}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Export it. (Shallowness isn't important here.)
+	data, err := IExportShallow(fset, pkg1, nil)
+	if err != nil {
+		t.Fatalf("export: %v", err) // any failure to export is a bug
+	}
+
+	// Re-import it.
+	imports := make(map[string]*types.Package)
+	pkg2, err := IImportShallow(fset, GetPackagesFromMap(imports), data, "p", nil)
+	if err != nil {
+		t.Fatalf("import: %v", err) // any failure of IExport+IImport is a bug.
+	}
+
+	insts := []types.Type{
+		pkg2.Scope().Lookup("J").Type(),
+		// This test is still racy, because the incomplete interface is contained
+		// within a nested type expression.
+		//
+		// Uncomment this once golang/go#61561 is fixed.
+		// pkg2.Scope().Lookup("K").Type().Underlying().(*types.Pointer).Elem(),
+	}
+
+	// Use the interface instances concurrently.
+	for _, inst := range insts {
+		var wg sync.WaitGroup
+		for i := 0; i < 2; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_ = types.NewMethodSet(inst)
+			}()
+		}
+		wg.Wait()
+	}
+}
+
 func TestIssue57015(t *testing.T) {
 	testenv.NeedsGo1Point(t, 18) // requires generics
 
@@ -834,14 +900,14 @@ func TestExportInvalid(t *testing.T) {
 
 			// Export it.
 			// (Shallowness isn't important here.)
-			data, err := IExportShallow(fset, pkg1)
+			data, err := IExportShallow(fset, pkg1, nil)
 			if err != nil {
 				t.Fatalf("export: %v", err) // any failure to export is a bug
 			}
 
 			// Re-import it.
 			imports := make(map[string]*types.Package)
-			pkg2, err := IImportShallow(fset, GetPackagesFromMap(imports), data, "p")
+			pkg2, err := IImportShallow(fset, GetPackagesFromMap(imports), data, "p", nil)
 			if err != nil {
 				t.Fatalf("import: %v", err) // any failure of IExport+IImport is a bug.
 			}

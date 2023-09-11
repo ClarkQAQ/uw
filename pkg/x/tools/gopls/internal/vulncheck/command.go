@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -99,49 +98,6 @@ func init() {
 		}
 		return nil
 	}
-}
-
-var (
-	// Regexp for matching go tags. The groups are:
-	// 1  the major.minor version
-	// 2  the patch version, or empty if none
-	// 3  the entire prerelease, if present
-	// 4  the prerelease type ("beta" or "rc")
-	// 5  the prerelease number
-	tagRegexp = regexp.MustCompile(`^go(\d+\.\d+)(\.\d+|)((beta|rc|-pre)(\d+))?$`)
-)
-
-// This is a modified copy of pkgsite/internal/stdlib:VersionForTag.
-func GoTagToSemver(tag string) string {
-	if tag == "" {
-		return ""
-	}
-
-	tag = strings.Fields(tag)[0]
-	// Special cases for go1.
-	if tag == "go1" {
-		return "v1.0.0"
-	}
-	if tag == "go1.0" {
-		return ""
-	}
-	m := tagRegexp.FindStringSubmatch(tag)
-	if m == nil {
-		return ""
-	}
-	version := "v" + m[1]
-	if m[2] != "" {
-		version += m[2]
-	} else {
-		version += ".0"
-	}
-	if m[3] != "" {
-		if !strings.HasPrefix(m[4], "-") {
-			version += "-"
-		}
-		version += m[4] + "." + m[5]
-	}
-	return version
 }
 
 // semverToGoTag returns the Go standard library repository tag corresponding
@@ -241,7 +197,7 @@ func vulnerablePackages(ctx context.Context, snapshot source.Snapshot, modfile s
 		return nil, err
 	}
 	cli, err := client.NewClient(
-		findGOVULNDB(snapshot.View().Options().EnvSlice()),
+		findGOVULNDB(snapshot.Options().EnvSlice()),
 		client.Options{HTTPCache: govulncheck.NewInMemoryCache(fsCache)})
 	if err != nil {
 		return nil, err
@@ -253,7 +209,7 @@ func vulnerablePackages(ctx context.Context, snapshot source.Snapshot, modfile s
 		mu    sync.Mutex
 	)
 
-	goVersion := snapshot.View().Options().Env[GoVersionForVulnTest]
+	goVersion := snapshot.Options().Env[GoVersionForVulnTest]
 	if goVersion == "" {
 		goVersion = snapshot.View().GoVersionString()
 	}

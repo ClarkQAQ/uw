@@ -1,0 +1,27 @@
+pipeline:
+  info: &info
+    image: golang:${GO_VERSION}-alpine
+    environment:
+      CGO_ENABLED: "0"
+    commands:
+      - go version
+      - go env
+  test:
+    << : *info
+    commands: go test -v -cover ./...
+  integration:
+    << : *info
+    environment:
+      CGO_ENABLED: "1"
+    commands:
+      - apk update
+      - apk add build-base libgsasl-dev
+      - go test -v -tags "integration" -run Integration ./...
+
+matrix:
+  GO_VERSION:
+    - 1.18
+    - 1.19
+
+depends_on:
+  - dco
