@@ -9,7 +9,7 @@
 # **/*_test.go
 
 **/test
-**/testdata
+# **/testdata
 **/vendor
 
 test.*
