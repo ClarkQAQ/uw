@@ -10,7 +10,7 @@ BASE_REPLACE_URL="uw/pkg/x/"
 # 包列表
 PACKAGE_LIST="sys,sync,text,net,tools,mod,crypto,image,term"
 # 自定义替换列表用 ; 分隔
-REPLACE_LIST="uw/pkg/goldmark:uw/pkg/goldmark"
+REPLACE_LIST="github.com/yuin/goldmark:uw/pkg/goldmark"
 
 cd $PWD_PATH
 
@@ -91,4 +91,8 @@ else
     _CLONE_PACKAGE $1
 fi
 
-# 删除: 
+# 删除: pkg/x/tools/gopls
+if [ -d "tools/gopls" ]; then
+    echo "删除 tools/gopls"
+    rm -r tools/gopls
+fi
