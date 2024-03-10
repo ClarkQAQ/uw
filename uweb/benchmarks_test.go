@@ -38,7 +38,7 @@ func BenchmarkLoggerMiddleware(B *testing.B) {
 
 func BenchmarkManyHandlers(B *testing.B) {
 	router := uweb.New()
-	router.Use(recovery(), timer(newMockWriter().WriteString))
+	router.Use(recovery())
 	router.Use(func(c *uweb.Context) {})
 	router.Use(func(c *uweb.Context) {})
 	router.Get("/ping", func(c *uweb.Context) {})
@@ -137,7 +137,7 @@ func (m *mockWriter) Write(p []byte) (n int, err error) {
 }
 
 func (m *mockWriter) WriteString(s string) (n int, err error) {
-	return len(s), nil
+	return 0, nil
 }
 
 func (m *mockWriter) WriteHeader(int) {}
