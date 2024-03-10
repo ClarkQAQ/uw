@@ -7,7 +7,7 @@ import (
 var defaultGcInterval = 60 * time.Second
 
 type Cache[K Hashable, V any] struct {
-	h        *Hmap[K, *Item[V]]
+	h        Mapper[K, *Item[V]]
 	gcTicker *time.Ticker
 }
 
@@ -17,6 +17,10 @@ type Item[V any] struct {
 }
 
 func NewCache[K Hashable, V any](gcInterval time.Duration) *Cache[K, V] {
+	return NewCacheWithMapper(NewHmap[K, *Item[V]](), gcInterval)
+}
+
+func NewCacheWithMapper[K Hashable, V any](mapper Mapper[K, *Item[V]], gcInterval time.Duration) *Cache[K, V] {
 	c := &Cache[K, V]{
 		h: NewHmap[K, *Item[V]](),
 	}

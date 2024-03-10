@@ -5,29 +5,37 @@ import (
 )
 
 type MLock[K Hashable] struct {
-	h *Hmap[K, MLockValue]
+	h Mapper[K, MLockValue]
 }
 
 type MLockValue (chan bool)
 
 // 初始化一个新的锁实例
-// 其实就是初始化一个sync.Map
-// 主要是为了定义泛型类型
-func NewLocker[K Hashable]() *MLock[K] {
+func NewLocker[K Hashable](mapper Mapper[K, MLockValue]) *MLock[K] {
 	return &MLock[K]{NewHmap[K, MLockValue]()}
+}
+
+// 初始化一个新的锁实例, 但是使用自定义的 Mapper
+func NewLockerWithMapper[K Hashable](mapper Mapper[K, MLockValue]) *MLock[K] {
+	return &MLock[K]{mapper}
 }
 
 // 用于内部获取chanel
 // 如果指定的key不存在，则会创建一个新的chanel
 func (m *MLock[K]) getLocker(k K) MLockValue {
-	locker, _ := m.h.GetOrSet(k, make(MLockValue, 1))
-	return locker
+	if locker, ok := m.h.Load(k); ok {
+		return locker
+	}
+
+	// 初始化一个新的chanel
+	m.h.Set(k, make(MLockValue, 1))
+	return m.getLocker(k)
 }
 
 // 普通加锁
 // 没有超时时间, 如果一直没能等到解锁，则永远阻塞或者deadlock, recover也将无法捕获
 func (m *MLock[K]) Lock(k K) {
-	m.LockWithContext(context.Background(), k)
+	_ = m.LockWithContext(context.Background(), k)
 }
 
 // 是否已经被锁定

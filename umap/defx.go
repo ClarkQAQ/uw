@@ -5,7 +5,7 @@ import (
 )
 
 type Defx[K Hashable, V any] struct {
-	m        *Hmap[K, *DefxValue[V]]
+	m        Mapper[K, *DefxValue[V]]
 	expire   time.Duration      // 默认过期时间
 	gcTicker *time.Ticker       // gc定时器
 	loader   func(K) (V, error) // 加载函数
@@ -17,10 +17,14 @@ type DefxValue[V any] struct {
 	exp   int64
 }
 
-// :defaultExpire: 默认过期时间
-// :loadingDuration: 等待加载轮询时间
-// :loader: 加载函数
+// defaultExpire: 默认过期时间
+// loadingDuration: 等待加载轮询时间
+// loader: 加载函数
 func NewDefx[K Hashable, V any](expire, gcInterval time.Duration, loader func(K) (V, error)) *Defx[K, V] {
+	return NewDefxWithMapper(NewHmap[K, *DefxValue[V]](), expire, gcInterval, loader)
+}
+
+func NewDefxWithMapper[K Hashable, V any](mapper Mapper[K, *DefxValue[V]], expire, gcInterval time.Duration, loader func(K) (V, error)) *Defx[K, V] {
 	if loader == nil {
 		loader = func(K) (V, error) {
 			var v V
@@ -33,7 +37,7 @@ func NewDefx[K Hashable, V any](expire, gcInterval time.Duration, loader func(K)
 	}
 
 	d := &Defx[K, V]{
-		m:        NewHmap[K, *DefxValue[V]](),
+		m:        mapper,
 		expire:   expire,
 		gcTicker: time.NewTicker(gcInterval),
 		loader:   loader,
