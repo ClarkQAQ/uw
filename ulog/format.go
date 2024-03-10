@@ -8,8 +8,8 @@ import (
 
 var (
 	LevelColor   Level = 128
-	DefaultLevel       = LevelDebug | LevelInfo | LevelWarn | LevelError |
-		LevelFatal | LevelPrintf | LevelColor
+	DefaultLevel       = LevelPrintf | LevelTrace | LevelDebug | LevelInfo | LevelWarn | LevelError |
+		LevelFatal | LevelColor
 	DefaultLevelNoColor = DefaultLevel ^ LevelColor
 )
 
@@ -62,7 +62,7 @@ func (sw *DefaultFormat) PureFormat(log *Log) string {
 		LevelName(log.Level),
 		log.Time.In(sw.location).Format("06-01-02 15:04:05.000"),
 		path.Base(log.File), log.Line,
-		fmt.Sprintf(log.Format, log.Args...),
+		log.Message,
 	)
 }
 
@@ -71,12 +71,14 @@ func (sw *DefaultFormat) PrettyFormat(log *Log) string {
 		levelPretty(log.Level),
 		SetANSI(ANSI.Grey, log.Time.In(sw.location).Format("06-01-02 15:04:05.000")),
 		SetANSI(ANSI.Magenta, fmt.Sprintf("%s:%d", path.Base(log.File), log.Line)),
-		fmt.Sprintf(log.Format, log.Args...),
+		log.Message,
 	)
 }
 
 func levelPretty(level Level) string {
 	switch level {
+	case LevelTrace:
+		return SetANSI(ANSI.Grey, SetANSI(ANSI.Bold, LevelName(level)))
 	case LevelInfo:
 		return SetANSI(ANSI.Green, SetANSI(ANSI.Bold, LevelName(level)))
 	case LevelWarn:

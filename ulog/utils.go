@@ -52,26 +52,20 @@ func SprintfANSI(ansi string, format string, val ...interface{}) string {
 	return ansi + fmt.Sprintf(format, val...) + ANSI.Reset
 }
 
-func Stack(maxDepth int, skip ...int) string {
-	var (
-		buffer              = bytes.NewBuffer(nil)
-		name, index, number = "", 1, 1
-		pc, file, line, ok  = uintptr(0), "", -1, true
-	)
-	if len(skip) > 0 {
-		number += skip[0]
-	}
-	for i := number; i < maxDepth; i++ {
-		pc, file, line, ok = runtime.Caller(i)
-		if ok {
-			if fn := runtime.FuncForPC(pc); fn == nil {
-				name = "unknown"
-			} else {
-				name = fn.Name()
+func Stack(maxDepth, skip int) string {
+	buffer, index := bytes.NewBuffer(nil), 0
+	for i := skip; i < maxDepth; i++ {
+		if pc, file, line, ok := runtime.Caller(i); ok {
+			index++
+
+			if fn := runtime.FuncForPC(pc); fn != nil {
+				buffer.WriteString(fmt.Sprintf("%d.%s\n\t%s:%d\n",
+					index, fn.Name(), file, line))
+				continue
 			}
 
-			buffer.WriteString(fmt.Sprintf("%d.%s\n\t%s:%d\n", index, name, file, line))
-			index++
+			buffer.WriteString(fmt.Sprintf("%d.unknow\n\t%s:%d\n",
+				index, file, line))
 		} else {
 			break
 		}

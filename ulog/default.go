@@ -20,12 +20,20 @@ func GlobalFormat() *DefaultFormat {
 	return globalFormat
 }
 
-func Info(format string, args ...interface{}) {
-	globalLogger.Log(LevelInfo, defaultCaller, format, args...)
+func Printf(format string, args ...interface{}) {
+	globalLogger.Log(LevelPrintf, defaultCaller, format, args...)
+}
+
+func Trace(format string, args ...interface{}) {
+	globalLogger.Log(LevelTrace, defaultCaller, format, args...)
 }
 
 func Debug(format string, args ...interface{}) {
 	globalLogger.Log(LevelDebug, defaultCaller, format, args...)
+}
+
+func Info(format string, args ...interface{}) {
+	globalLogger.Log(LevelInfo, defaultCaller, format, args...)
 }
 
 func Warn(format string, args ...interface{}) {
@@ -40,10 +48,6 @@ func Error(format string, args ...interface{}) {
 func Fatal(format string, args ...interface{}) {
 	globalLogger.Log(LevelFatal, defaultCaller, format, args...)
 	panic(fmt.Sprintf(format, args...))
-}
-
-func Printf(format string, args ...interface{}) {
-	globalLogger.Log(LevelPrintf, defaultCaller, format, args...)
 }
 
 func Timer() *TimerLogger {
