@@ -47,6 +47,10 @@ func (c *Context) Delete(key string) {
 	c.b.storage.Delete(key)
 }
 
+func (c *Context) Range(f func(key string, value interface{}) bool) {
+	c.b.storage.Range(f)
+}
+
 func (c *Context) Context() context.Context {
 	return c.ctx
 }
