@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -46,20 +45,22 @@ type basicAuthInfo struct {
 
 // Client is a HTTP client which provides usable and chainable methods.
 type Client struct {
-	cli       *http.Client
-	req       *http.Request
-	res       *Response
-	method    string
-	url       *url.URL
-	queryVals url.Values
-	formVals  url.Values
-	mw        *multipart.Writer
-	mwBuf     *bytes.Buffer
-	body      io.Reader
-	basicAuth *basicAuthInfo
-	header    http.Header
-	cookies   []*http.Cookie
-	err       error
+	cli                *http.Client
+	req                *http.Request
+	res                *Response
+	method             string
+	url                *url.URL
+	queryVals          url.Values
+	queryValsSortSlice []string
+	formVals           url.Values
+	formValsSortSlice  []string
+	mw                 *multipart.Writer
+	mwBuf              *bytes.Buffer
+	body               io.Reader
+	basicAuth          *basicAuthInfo
+	header             http.Header
+	cookies            []*http.Cookie
+	err                error
 }
 
 // New returns a new instance of Client.
@@ -75,6 +76,27 @@ func New() *Client {
 	c.mw = multipart.NewWriter(c.mwBuf)
 
 	return c
+}
+
+func (c *Client) Clone() *Client {
+	nc := New()
+	nc.cli = c.cli
+	nc.req = c.req
+	nc.res = c.res
+	nc.method = c.method
+	nc.url = c.url
+	nc.queryVals = c.queryVals
+	nc.queryValsSortSlice = c.queryValsSortSlice
+	nc.formVals = c.formVals
+	nc.formValsSortSlice = c.formValsSortSlice
+	nc.mw = c.mw
+	nc.mwBuf = c.mwBuf
+	nc.body = c.body
+	nc.basicAuth = c.basicAuth
+	nc.header = c.header
+	nc.cookies = c.cookies
+	nc.err = c.err
+	return nc
 }
 
 // To defines the method and URL of the request.
@@ -254,36 +276,6 @@ func (c *Client) Send(body interface{}) *Client {
 	return c
 }
 
-type MultiFromData struct {
-	Field    string
-	FileName string
-	Reader   io.Reader
-}
-
-func (c *Client) MultiFrom(values ...MultiFromData) *Client {
-	buf := &bytes.Buffer{}
-	mw := multipart.NewWriter(buf)
-	defer mw.Close()
-
-	for i := 0; i < len(values); i++ {
-		fw, e := mw.CreateFormFile(values[i].Field,
-			values[i].FileName)
-		if e != nil {
-			c.err = e
-			return c
-		}
-
-		if _, e := io.Copy(fw, values[i].Reader); e != nil {
-			c.err = e
-			return c
-		}
-	}
-
-	c.Set(ContentType, mw.FormDataContentType())
-	c.body = buf
-	return c
-}
-
 // Cookie adds the cookie to the request.
 func (c *Client) Cookie(cookie *http.Cookie) *Client {
 	c.cookies = append(c.cookies, cookie)
@@ -354,15 +346,9 @@ func (c *Client) Field(vals url.Values) *Client {
 // Attach adds the attachment file to the form. Once the attachment was
 // set, the "Content-Type" will be set to "multipart/form-data; boundary=xxx"
 // automatically.
-func (c *Client) Attach(fieldname, path, filename string) *Client {
+func (c *Client) Attach(fieldname, filename string, file io.Reader) *Client {
 	if c.body != nil {
 		c.err = ErrBodyAlreadySet
-		return c
-	}
-
-	file, err := os.Open(path)
-	if err != nil {
-		c.err = err
 		return c
 	}
 
@@ -377,6 +363,18 @@ func (c *Client) Attach(fieldname, path, filename string) *Client {
 		return c
 	}
 
+	return c
+}
+
+// SetQuerySortSlice sets the query sort slice.
+func (c *Client) SetQuerySortSlice(keys []string) *Client {
+	c.queryValsSortSlice = keys
+	return c
+}
+
+// SetFormSortSlice sets the form sort slice.
+func (c *Client) SetFormSortSlice(keys []string) *Client {
+	c.formValsSortSlice = keys
 	return c
 }
 
@@ -506,7 +504,7 @@ func (c *Client) Data() ([]byte, error) {
 }
 
 func (c *Client) assemble() error {
-	c.url.RawQuery = c.queryVals.Encode()
+	c.url.RawQuery = encodeUrlValues(c.queryVals, c.queryValsSortSlice)
 
 	var buf io.Reader
 
@@ -525,7 +523,7 @@ func (c *Client) assemble() error {
 		c.Type(c.mw.FormDataContentType())
 		c.mw.Close()
 	} else if c.formVals != nil && c.body == nil {
-		buf = strings.NewReader(c.formVals.Encode())
+		buf = strings.NewReader(encodeUrlValues(c.formVals, c.formValsSortSlice))
 	} else {
 		buf = c.body
 	}
