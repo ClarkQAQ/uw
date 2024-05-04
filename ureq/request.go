@@ -107,8 +107,8 @@ func cloneMapSliceValue[K comparable, V any](value map[K][]V) map[K][]V {
 func (c *Client) Clone() *Client {
 	nc := New()
 	nc.cli = c.cli
-	nc.req = &http.Request{}
-	nc.res = &Response{}
+	nc.req = nil
+	nc.res = nil
 	nc.method = c.method
 	nc.url = c.url
 	nc.queryVals = cloneMapSliceValue(c.queryVals)
