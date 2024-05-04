@@ -108,12 +108,14 @@ func (c *Client) Clone() *Client {
 	nc := New()
 	nc.cli = c.cli
 	nc.method = c.method
-	u, e := url.Parse(c.url.String())
-	if e != nil {
-		nc.err = e
-		return nc
+	if c.url != nil {
+		u, e := url.Parse(c.url.String())
+		if e != nil {
+			nc.err = e
+			return nc
+		}
+		nc.url = u
 	}
-	nc.url = u
 	nc.queryVals = cloneMapSliceValue(c.queryVals)
 	nc.queryValsSortSlice = c.queryValsSortSlice
 	nc.formVals = cloneMapSliceValue(c.formVals)
