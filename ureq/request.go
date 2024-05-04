@@ -107,26 +107,25 @@ func cloneMapSliceValue[K comparable, V any](value map[K][]V) map[K][]V {
 func (c *Client) Clone() *Client {
 	nc := New()
 	nc.cli = c.cli
-	nc.req = nil
-	nc.res = nil
 	nc.method = c.method
-	nc.url = c.url
+	u, e := url.Parse(c.url.String())
+	if e != nil {
+		nc.err = e
+		return nc
+	}
+	nc.url = u
 	nc.queryVals = cloneMapSliceValue(c.queryVals)
 	nc.queryValsSortSlice = c.queryValsSortSlice
 	nc.formVals = cloneMapSliceValue(c.formVals)
 	nc.formValsSortSlice = c.formValsSortSlice
-
 	nc.mwBuf = bytes.NewBuffer(nil)
 	nc.mw = multipart.NewWriter(nc.mwBuf)
-
-	nc.body = nil
-
-	nc.basicAuth = &basicAuthInfo{}
 	if c.basicAuth != nil {
-		nc.basicAuth.name = c.basicAuth.name
-		nc.basicAuth.password = c.basicAuth.password
+		nc.basicAuth = &basicAuthInfo{
+			name:     c.basicAuth.name,
+			password: c.basicAuth.password,
+		}
 	}
-
 	nc.header = cloneMapSliceValue(c.header)
 	nc.cookies = c.cookies
 	nc.err = c.err
