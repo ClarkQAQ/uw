@@ -462,8 +462,12 @@ func (c *Client) End() (*Response, error) {
 		return nil, ErrLackMethod
 	}
 
-	if c.err != nil || c.res != nil {
-		return c.res, c.err
+	if c.err != nil {
+		return nil, c.err
+	}
+
+	if c.res != nil {
+		return c.res, nil
 	}
 
 	if err := c.assemble(); err != nil {
