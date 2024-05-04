@@ -78,22 +78,56 @@ func New() *Client {
 	return c
 }
 
+func cloneMapSliceValue[K comparable, V any](value map[K][]V) map[K][]V {
+	if value == nil {
+		return nil
+	}
+
+	// Find total number of values.
+	nv := 0
+	for _, vv := range value {
+		nv += len(vv)
+	}
+	sv := make([]V, nv) // shared backing array for headers' values
+	h2 := make(map[K][]V, len(value))
+	for k, vv := range value {
+		if vv == nil {
+			// Preserve nil values. ReverseProxy distinguishes
+			// between nil and zero-length header values.
+			h2[k] = nil
+			continue
+		}
+		n := copy(sv, vv)
+		h2[k] = sv[:n:n]
+		sv = sv[n:]
+	}
+	return h2
+}
+
 func (c *Client) Clone() *Client {
 	nc := New()
 	nc.cli = c.cli
-	nc.req = c.req
-	nc.res = c.res
+	nc.req = &http.Request{}
+	nc.res = &Response{}
 	nc.method = c.method
 	nc.url = c.url
-	nc.queryVals = c.queryVals
+	nc.queryVals = cloneMapSliceValue(c.queryVals)
 	nc.queryValsSortSlice = c.queryValsSortSlice
-	nc.formVals = c.formVals
+	nc.formVals = cloneMapSliceValue(c.formVals)
 	nc.formValsSortSlice = c.formValsSortSlice
-	nc.mw = c.mw
-	nc.mwBuf = c.mwBuf
-	nc.body = c.body
-	nc.basicAuth = c.basicAuth
-	nc.header = c.header
+
+	nc.mwBuf = bytes.NewBuffer(nil)
+	nc.mw = multipart.NewWriter(nc.mwBuf)
+
+	nc.body = nil
+
+	nc.basicAuth = &basicAuthInfo{}
+	if c.basicAuth != nil {
+		nc.basicAuth.name = c.basicAuth.name
+		nc.basicAuth.password = c.basicAuth.password
+	}
+
+	nc.header = cloneMapSliceValue(c.header)
 	nc.cookies = c.cookies
 	nc.err = c.err
 	return nc
