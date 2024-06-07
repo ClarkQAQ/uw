@@ -7,13 +7,13 @@ import (
 )
 
 func encodeUrlValues(v url.Values, keys []string) string {
-	if v == nil {
+	if len(v) == 0 {
 		return ""
 	}
 	var buf strings.Builder
 
 	if len(keys) < 1 {
-		keys := make([]string, 0, len(v))
+		keys = make([]string, 0, len(v))
 		for k := range v {
 			keys = append(keys, k)
 		}
