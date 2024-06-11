@@ -9,85 +9,10 @@ import (
 	"time"
 )
 
-var defaultSeparator = "/" // 默认路径分隔符
-
-type Value struct{}
-
-func TestRouteTree_Get_Set_Dump(t *testing.T) {
-	tree := New[*Value]()
-	handlerList := map[string]bool{}
-
-	testGetHandler := func(path, target string, has bool) {
-		handlerList[path] = true
-		tree.Set(path, &Value{})
-		handler, vpath := tree.Get(target)
-		if handler == nil && has {
-			t.Fatalf("handler must not be nil, path: %s, target: %s", path, target)
-		} else if handler != nil && !has {
-			t.Fatalf("handler must be nil, path: %s, target: %s", path, target)
-		}
-
-		fmt.Printf("test get target: %s, vpath: %s\n", target, vpath)
-	}
-
-	testGetHandler(string([]byte{255}), string([]byte{255}), true)
-	testGetHandler("/�/ÿ", "/�/ÿ", true)
-	testGetHandler("/api/qaq/1", "/api/qaq/1", true)
-	testGetHandler("/api/qaq/1/qwq", "/api/qaq/1/qwq", true)
-	testGetHandler("GET@/api/qaq/1/qwq/2", "GET@/api/qaq/1/qwq/2", true)
-	testGetHandler("/api/colon/:qwq/oxo", "/api/colon/1/oxo", true)
-	testGetHandler("/api/asterisk/*qaq/qwq", "/api/asterisk/1/2/3/qwq", true)
-	testGetHandler("/api/qqqqqq", "/api/aaaaaa", false)
-
-	{
-		m := tree.Dump()
-		if len(m) < 1 {
-			t.Fatal("export must not be empty")
-		}
-
-		for _, v := range m {
-			delete(handlerList, v.Path)
-			fmt.Printf("dump path: %s, value: %#v\n", v.Path, v.Value)
-		}
-
-		if len(handlerList) > 0 {
-			fmt.Println("handlerList:", handlerList)
-			t.Fatal("handlerList must be empty")
-		}
-	}
-}
-
-func TestRouteTree_Delete(t *testing.T) {
-	tree := New[*Value]()
-
-	tree.Set("/api/qaq/1", &Value{})
-
-	if v, _ := tree.Get("/api/qaq/1"); v == nil {
-		t.Fatal("handler must not be nil")
-	}
-
-	tree.Delete("/api/qaq/1")
-
-	if v, _ := tree.Get("/api/qaq/1"); v != nil {
-		t.Fatal("handler must be nil")
-	}
-}
-
-func TestRouteTree_Move(t *testing.T) {
-	tree := New[*Value]()
-
-	tree.Set("/api/qaq/1", &Value{})
-
-	tree1 := tree.Move("/api")
-
-	if tree1 == nil {
-		t.Fatal("tree1 must not be nil")
-	}
-
-	if v, _ := tree1.Get("/qaq/1"); v == nil {
-		t.Fatal("handler must not be nil")
-	}
-}
+var (
+	defaultSeparator           = "/" // 默认路径分隔符
+	globalParams, globalValues = generateKeyValuePath()
+)
 
 type RandomString struct {
 	mu     sync.Mutex
@@ -120,13 +45,13 @@ func (c *RandomString) Intn(n int) int {
 	return x
 }
 
-// fork by: https://github.com/lxzan/uRouter/blob/main/trie_test.go#L68
-func BenchmarkRouteTree_Get(b *testing.B) {
-	count := 1024
+func generateKeyValuePath() ([1024]string, [1024]string) {
 	segmentLen := 2
-	tree := &Tree[*Value]{}
 	r := Numeric
-	for i := 0; i < count; i++ {
+
+	params, values := [1024]string{}, [1024]string{}
+
+	for i := 0; i < 1024; i++ {
 		idx := r.Intn(4)
 		var list []string
 		for j := 0; j < 4; j++ {
@@ -136,91 +61,173 @@ func BenchmarkRouteTree_Get(b *testing.B) {
 			}
 			list = append(list, ele)
 		}
-		tree.Set(strings.Join(list, defaultSeparator), &Value{})
+
+		params[i] = strings.Join(list, defaultSeparator)
 	}
 
-	var paths []string
-	for i := 0; i < count; i++ {
+	for i := 0; i < 1024; i++ {
 		path := r.Generate(12)
 		path[0], path[3], path[6], path[9] = defaultSeparator[0], defaultSeparator[0], defaultSeparator[0], defaultSeparator[0]
-		paths = append(paths, string(path))
+		values[i] = string(path)
+	}
+
+	return params, values
+}
+
+type Value struct{}
+
+func TestTree_Get_Set(t *testing.T) {
+	tree := New[*Value]()
+
+	testGetHandler := func(path, target string, has bool) {
+		tree.Set(path, &Value{})
+		handler, vpath := tree.Get(target)
+		if handler == nil && has {
+			t.Fatalf("handler must not be nil, path: %s, target: %s", path, target)
+		} else if handler != nil && !has {
+			t.Fatalf("handler must be nil, path: %s, target: %s", path, target)
+		}
+
+		fmt.Printf("test get target: %s, vpath: %s\n", target, vpath)
+	}
+
+	testGetHandler(string([]byte{255}), string([]byte{255}), true)
+	testGetHandler("/�/ÿ", "/�/ÿ", true)
+	testGetHandler("/�/:qaq/ÿ", "/�/123/ÿ", true)
+	testGetHandler("/�/:qaq/ÿ", "/�/123/�", false)
+	testGetHandler("/api/qaq/1", "/api/qaq/1", true)
+	testGetHandler("/api/qaq/1/qwq", "/api/qaq/1/qwq", true)
+	testGetHandler("GET@/api/qaq/1/qwq/2", "GET@/api/qaq/1/qwq/2", true)
+	testGetHandler("/api/colon/:qwq/oxo", "/api/colon/1/oxo", true)
+	testGetHandler("/api/asterisk/*qaq/qwq", "/api/asterisk/1/2/3/qwq", true)
+	testGetHandler("/api/qqqqqq", "/api/aaaaaa", false)
+}
+
+func TestTree_Delete(t *testing.T) {
+	tree := New[*Value]()
+
+	tree.Set("/api/qaq/1", &Value{})
+
+	if v, _ := tree.Get("/api/qaq/1"); v == nil {
+		t.Fatal("handler must not be nil")
+	}
+
+	tree.Delete("/api/qaq/1")
+
+	if v, _ := tree.Get("/api/qaq/1"); v != nil {
+		t.Fatal("handler must be nil")
+	}
+}
+
+func TestTree_Move(t *testing.T) {
+	tree := New[*Value]()
+
+	tree.Set("/api/qaq/1", &Value{})
+
+	tree1 := tree.Move("/api")
+
+	if tree1 == nil {
+		t.Fatal("tree1 must not be nil")
+	}
+
+	if v, _ := tree1.Get("/qaq/1"); v == nil {
+		t.Fatal("handler must not be nil")
+	}
+}
+
+func TestTree_Dump(t *testing.T) {
+	tree := New[*Value]()
+
+	for i := 0; i < 256; i++ {
+		tree.Set(string([]byte{byte(i)}), &Value{})
+	}
+
+	m := tree.Dump()
+	if len(m) < 1 {
+		t.Fatal("export must not be empty")
+	}
+
+	list := make(map[string]bool)
+	for i := 0; i < len(m); i++ {
+		list[m[i].Path] = true
+	}
+
+	for i := 0; i < 256; i++ {
+		if !list[string([]byte{byte(i)})] {
+			t.Fatal("export must not be empty")
+		}
+	}
+}
+
+// fork by: https://github.com/lxzan/uRouter/blob/main/trie_test.go#L68
+func BenchmarkTree_Get(b *testing.B) {
+	tree := &Tree[*Value]{}
+	for i := 0; i < len(globalParams); i++ {
+		tree.Set(globalParams[i], &Value{})
 	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		path := paths[i&(count-1)]
+		path := globalValues[i&(1023)]
 		tree.Get(path)
 	}
 }
 
-func BenchmarkMap_Get(b *testing.B) {
-	count := 1024
-	segmentLen := 2
+func BenchmarkStaticMap_Get(b *testing.B) {
 	m := map[string]*Value{}
-	r := Numeric
-	for i := 0; i < count; i++ {
-		idx := r.Intn(4)
-		var list []string
-		for j := 0; j < 4; j++ {
-			ele := string(r.Generate(segmentLen))
-			if j == idx {
-				ele = ":" + ele
-			}
-			list = append(list, ele)
-		}
-		m[strings.Join(list, defaultSeparator)] = &Value{}
-	}
-
-	var paths []string
-	for i := 0; i < count; i++ {
-		path := r.Generate(12)
-		path[0], path[3], path[6], path[9] = defaultSeparator[0], defaultSeparator[0], defaultSeparator[0], defaultSeparator[0]
-		paths = append(paths, string(path))
+	for i := 0; i < len(globalParams); i++ {
+		m[globalParams[i]] = &Value{}
 	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		path := paths[i&(count-1)]
+		path := globalValues[i&(1023)]
 		_ = m[path]
 	}
 }
 
-func BenchmarkRouteTree_Set(b *testing.B) {
-	count := 1024
-	tree := &Tree[*Value]{}
-	r := Numeric
-	m := &Value{}
-
-	var paths []string
-	for i := 0; i < count; i++ {
-		path := r.Generate(12)
-		path[0], path[3], path[6], path[9] = defaultSeparator[0], defaultSeparator[0], defaultSeparator[0], defaultSeparator[0]
-		paths = append(paths, string(path))
-	}
+func BenchmarkTree_Set(b *testing.B) {
+	tree, val := &Tree[*Value]{}, &Value{}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		path := paths[i&(count-1)]
-		tree.Set(path, m)
+		path := globalParams[i&(1023)]
+		tree.Set(path, val)
 	}
 }
 
-func BenchmarkRouteMap_Set(b *testing.B) {
-	count := 1024
-	m := map[string]*Value{}
-	r := Numeric
-	val := &Value{}
+func BenchmarkStaticMap_Set(b *testing.B) {
+	m, val := map[string]*Value{}, &Value{}
 
-	var paths []string
-	for i := 0; i < count; i++ {
-		path := r.Generate(12)
-		path[0], path[3], path[6], path[9] = defaultSeparator[0], defaultSeparator[0], defaultSeparator[0], defaultSeparator[0]
-		paths = append(paths, string(path))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		path := globalValues[i&(1023)]
+		m[path] = val
+	}
+}
+
+func BenchmarkTree_Delete(b *testing.B) {
+	tree := &Tree[*Value]{}
+	for i := 0; i < len(globalParams); i++ {
+		tree.Set(globalParams[i], &Value{})
 	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		path := paths[i&(count-1)]
-		m[path] = val
+		path := globalParams[i&(1023)]
+		tree.Delete(path)
+	}
+}
+
+func BenchmarkStaticMap_Delete(b *testing.B) {
+	m := map[string]*Value{}
+	for i := 0; i < len(globalParams); i++ {
+		m[globalParams[i]] = &Value{}
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		path := globalValues[i&(1023)]
+		delete(m, path)
 	}
 }
