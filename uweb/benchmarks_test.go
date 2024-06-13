@@ -162,10 +162,6 @@ func recovery() uweb.HandlerFunc {
 			if r := recover(); r != nil {
 				c.String(http.StatusInternalServerError, "Internal Server Error")
 			}
-
-			if c.Index() < -1 {
-				panic(nil)
-			}
 		}()
 
 		c.Next()

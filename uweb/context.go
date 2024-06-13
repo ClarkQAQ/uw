@@ -13,6 +13,12 @@ import (
 	"sync"
 )
 
+const (
+	EndIndex        = -10
+	OutlineEndIndex = -20
+	CloseIndex      = -30
+)
+
 type HandlerFunc func(*Context)
 
 type HandlerList []HandlerFunc
@@ -81,7 +87,7 @@ func (uweb *Uweb) newContext() *Context {
 		ctxStore:     nil,
 		ctxStoreLock: &sync.RWMutex{},
 		parmas:       nil,
-		index:        -1,
+		index:        0,
 	}
 
 	c.Writer = newWriterBufferContext()
@@ -96,7 +102,7 @@ func (c *Context) reset() {
 	c.vpath = nil
 	c.parmas = nil
 	c.ctxStore = nil
-	c.index = -1
+	c.index = 0
 	c.handlerList = nil
 }
 
@@ -215,7 +221,7 @@ func (c *Context) SetHeader(key string, value string) {
 func (c *Context) Sprintf(code int, format string, values ...any) {
 	c.Status(code)
 	if c.Writer.Header().Get(HeaderContentType) == "" {
-		c.SetHeader(HeaderContentType, "text/html;  charset=utf-8")
+		c.SetHeader(HeaderContentType, "text/plain; charset=utf-8")
 	}
 
 	fmt.Fprintf(c.Writer, format, values...)
@@ -226,10 +232,19 @@ func (c *Context) Sprintf(code int, format string, values ...any) {
 func (c *Context) String(code int, format string) {
 	c.Status(code)
 	if c.Writer.Header().Get(HeaderContentType) == "" {
-		c.SetHeader(HeaderContentType, "text/html;  charset=utf-8")
+		c.SetHeader(HeaderContentType, "text/plain; charset=utf-8")
 	}
 
 	_, _ = c.Writer.WriteString(format)
+}
+
+func (c *Context) Html(code int, html string) {
+	c.Status(code)
+	if c.Writer.Header().Get(HeaderContentType) == "" {
+		c.SetHeader(HeaderContentType, "text/html; charset=utf-8")
+	}
+
+	_, _ = c.Writer.WriteString(html)
 }
 
 func (c *Context) JSON(code int, obj any) {
@@ -288,17 +303,14 @@ func (c *Context) WriteTo(w io.Writer) (int64, error) {
 }
 
 func (c *Context) ResponseWriter(f func(w http.ResponseWriter)) {
-	defer func() {
-		c.index = -50
-		panic(nil)
-	}()
+	defer c.end(OutlineEndIndex)
 
 	f(c.writer)
 }
 
 // 循环执行下一个HandlerFunc
 func (c *Context) Next() {
-	for c.index++; c.index > -1 && c.index < len(c.handlerList); c.index++ {
+	for c.index > -1 && c.index < len(c.handlerList) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil && c.index > -1 {
@@ -306,33 +318,33 @@ func (c *Context) Next() {
 				}
 			}()
 
-			c.handlerList[c.index](c)
+			c.index++
+			c.handlerList[c.index-1](c)
 		}()
 	}
 }
 
-// handler 调用索引
 func (c *Context) Index() int {
 	return c.index
 }
 
-// 清除缓冲区
 func (c *Context) Clean() {
 	c.Writer.reset()
 	c.Writer.header = c.writer.Header()
 }
 
-// 结束请求, 并跳过后续的HandlerFunc
-// 将正常输出缓冲区内容
 func (c *Context) End() {
-	c.index = -10
-	panic(nil)
+	c.end(EndIndex)
 }
 
 // 重置请求, 并跳过后续的HandlerFunc
 // 将无任何输出, 并且浏览器显示连接已重置
 // 但是仍然有响应头 "HTTP 1.1 400 Bad Request\r\nConnection: close"
 func (c *Context) Close() {
-	c.index = -100
-	panic(nil)
+	c.end(CloseIndex)
+}
+
+func (c *Context) end(index int) {
+	c.index = index
+	panic(http.ErrAbortHandler)
 }

@@ -1,19 +1,19 @@
 package uweb
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"sync"
 
+	"uw/utils"
 	"uw/utree"
 )
 
 type Uweb struct {
-	*Group                          // 路由组
-	tree   *utree.Tree[HandlerList] // 路由树
-
-	contextPool *sync.Pool
+	*Group                                // router group, this is the root group
+	tree        *utree.Tree[HandlerList]  // router tree, use utree
+	contextPool *utils.SafePool[*Context] // context pool
 }
 
 func New() *Uweb {
@@ -21,11 +21,9 @@ func New() *Uweb {
 
 	uweb.Group = &Group{uweb, "/", nil, nil}
 	uweb.tree = utree.New[HandlerList]()
-	uweb.contextPool = &sync.Pool{
-		New: func() interface{} {
-			return uweb.newContext()
-		},
-	}
+	uweb.contextPool = utils.NewSafePool(func() *Context {
+		return uweb.newContext()
+	})
 
 	return uweb
 }
@@ -35,8 +33,7 @@ func (uweb *Uweb) DumpRoute() []*utree.DumpValue[HandlerList] {
 }
 
 func defaultNotFound(c *Context) {
-	c.Writer.WriteHeader(http.StatusNotFound)
-	c.Writer.body.WriteString("404 NOT FOUND:" + c.Req.URL.Path)
+	http.Error(c.Writer, "404 NOT FOUND:"+c.Req.URL.Path, http.StatusNotFound)
 }
 
 func (uweb *Uweb) Handle(c *Context) {
@@ -45,13 +42,21 @@ func (uweb *Uweb) Handle(c *Context) {
 		c.handlerList = append(uweb.middleware, defaultNotFound)
 	}
 
-	defer func() { _ = recover() }()
+	defer func() {
+		if r := recover(); r != nil && c.index > -1 {
+			c.Clean()
+			http.Error(c.Writer,
+				fmt.Sprintf("%s, Recover: %v",
+					http.StatusText(http.StatusInternalServerError), r),
+				http.StatusInternalServerError)
+		}
+	}()
 
 	c.Next()
 }
 
 func (uweb *Uweb) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	c := uweb.contextPool.Get().(*Context)
+	c := uweb.contextPool.Get()
 	defer func(t *Uweb, ctx *Context) {
 		ctx.reset()
 		t.contextPool.Put(c)
@@ -61,8 +66,8 @@ func (uweb *Uweb) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	uweb.Handle(c)
 
-	if c.index < -10 {
-		if c.index < -50 {
+	if c.index < EndIndex {
+		if c.index <= CloseIndex {
 			panic(http.ErrAbortHandler)
 		}
 
