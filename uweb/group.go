@@ -22,12 +22,22 @@ func (g *Group) NewGroup(prefix string) *Group {
 	}
 }
 
-func (g *Group) parentMiddlewares() (handles []HandlerFunc) {
-	if g.parent != nil {
-		return append(g.parent.parentMiddlewares(), g.middleware...)
+func (g *Group) generateHandlerList(handler ...HandlerFunc) []HandlerFunc {
+	handles := make([]HandlerFunc, 0, len(g.middleware)+len(handler))
+
+	for {
+		handles = append(handles, g.middleware...)
+
+		if g.parent != nil {
+			g = g.parent
+			continue
+		}
+
+		break
 	}
 
-	return g.middleware
+	handles = append(handles, handler...)
+	return handles
 }
 
 func (g *Group) GroupTx(prefix string, f func(g *Group)) {
@@ -40,7 +50,7 @@ func (g *Group) Use(middleware ...HandlerFunc) {
 
 func (g *Group) Method(method, part string, handler HandlerFunc) {
 	g.uweb.tree.Set(strings.ToUpper(method)+"@"+path.Join(g.prefix, part),
-		append(g.parentMiddlewares(), handler))
+		g.generateHandlerList(handler))
 }
 
 func (g *Group) Get(part string, handler HandlerFunc) {
