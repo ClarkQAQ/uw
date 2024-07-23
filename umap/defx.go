@@ -1,8 +1,11 @@
 package umap
 
 import (
+	"errors"
 	"time"
 )
+
+var ErrKeyExpired = errors.New("key expired")
 
 type Defx[K Hashable, V any] struct {
 	m        Mapper[K, *DefxValue[V]]
@@ -85,6 +88,9 @@ func (d *Defx[K, V]) defaultValue() V {
 
 func (d *Defx[K, V]) load(key K) (_ *DefxValue[V], e error) {
 	if val, ok := d.m.Load(key); ok {
+		if val.exp < time.Now().Unix() {
+			return nil, ErrKeyExpired
+		}
 		return val, nil
 	}
 
@@ -106,6 +112,19 @@ func (d *Defx[K, V]) Load(key K) (val V, e error) {
 	}
 
 	return v.value, nil
+}
+
+func (d *Defx[K, V]) Loaded(key K) bool {
+	val, ok := d.m.Load(key)
+	if !ok {
+		return false
+	}
+
+	if val.exp < time.Now().Unix() {
+		return false
+	}
+
+	return true
 }
 
 func (d *Defx[K, V]) Range(cb func(K, V) bool) {
