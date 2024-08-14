@@ -31,26 +31,6 @@ func (c *Context) Printf(format string, args ...interface{}) {
 	c.printf(format, args...)
 }
 
-func (c *Context) Get(key string) interface{} {
-	return c.b.storage.Get(key)
-}
-
-func (c *Context) Load(key string) (interface{}, bool) {
-	return c.b.storage.Load(key)
-}
-
-func (c *Context) Set(key string, value interface{}) {
-	c.b.storage.Set(key, value)
-}
-
-func (c *Context) Delete(key string) {
-	c.b.storage.Delete(key)
-}
-
-func (c *Context) Range(f func(key string, value interface{}) bool) {
-	c.b.storage.Range(f)
-}
-
 func (c *Context) Context() context.Context {
 	return c.ctx
 }

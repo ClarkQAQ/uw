@@ -42,16 +42,15 @@ func newContextWithCancel() *ContextWithCancel {
 }
 
 type Boot struct {
-	bootTimeout        time.Duration // 启动超时时间
-	daemonRestartAfter time.Duration // 守护模块重启时间间隔
-	printf             Printf        // 打印函数
-	frontUint          []*UintAgent  // 预启动模块
-	backgroundUint     []*UintAgent  // 后台模块
-	normalUint         []*UintAgent  // 默认模块
-	daemonUint         []*UintAgent  // 守护模块
-	afterUint          []*UintAgent  // 延后启动模块
-	lock               *sync.Mutex   // 用于锁定 Boot 对象的 Start，防止重复启动, 类似 once 的作用
-	storage            *umap.Hmap[string, interface{}]
+	bootTimeout        time.Duration                          // 启动超时时间
+	daemonRestartAfter time.Duration                          // 守护模块重启时间间隔
+	printf             Printf                                 // 打印函数
+	frontUint          []*UintAgent                           // 预启动模块
+	backgroundUint     []*UintAgent                           // 后台模块
+	normalUint         []*UintAgent                           // 默认模块
+	daemonUint         []*UintAgent                           // 守护模块
+	afterUint          []*UintAgent                           // 延后启动模块
+	lock               *sync.Mutex                            // 用于锁定 Boot 对象的 Start，防止重复启动, 类似 once 的作用
 	require            *umap.Hmap[string, *ContextWithCancel] // 用于模块间的依赖
 
 	allowNameRepeat bool // 允许模块名重复
@@ -69,7 +68,6 @@ func NewBoot() *Boot {
 		daemonUint:         []*UintAgent{},
 		afterUint:          []*UintAgent{},
 		lock:               &sync.Mutex{},
-		storage:            umap.NewHmap[string, interface{}](),
 		require:            umap.NewHmap[string, *ContextWithCancel](),
 	}
 
