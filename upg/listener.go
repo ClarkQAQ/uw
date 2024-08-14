@@ -42,6 +42,8 @@ type Listener struct {
 	chOnce sync.Once
 	ch     chan Notification
 	pingCh chan struct{}
+
+	pingTimeout time.Duration
 }
 
 func (ln *Listener) String() string {
@@ -147,6 +149,13 @@ func (ln *Listener) Close() error {
 	close(ln.exit)
 
 	return ln.closeTheCn(errListenerClosed)
+}
+
+// SetPingTimeout sets ping timeout.
+// The default ping timeout is 10 second.
+// set to 0 to disable ping detection
+func (ln *Listener) SetPingTimeout(timeout time.Duration) {
+	ln.pingTimeout = timeout
 }
 
 // Listen starts listening for notifications on channels.
@@ -269,7 +278,6 @@ func (ln *Listener) channel(size int) <-chan Notification {
 }
 
 func (ln *Listener) initChannel(size int) {
-	const pingTimeout = time.Second
 	const chanSendTimeout = time.Minute
 
 	ctx := ln.db.ctx
@@ -329,13 +337,18 @@ func (ln *Listener) initChannel(size int) {
 		}
 	}()
 
+	// ping timeout is set to 0 to disable ping detection
+	if ln.pingTimeout < 1 {
+		return
+	}
+
 	go func() {
 		timer := time.NewTimer(time.Minute)
 		timer.Stop()
 
 		healthy := true
 		for {
-			timer.Reset(pingTimeout)
+			timer.Reset(ln.pingTimeout)
 			select {
 			case <-ln.pingCh:
 				healthy = true

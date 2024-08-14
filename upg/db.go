@@ -77,7 +77,8 @@ func (db *DB) WithParam(param string, value interface{}) *DB {
 // Listen listens for notifications sent with NOTIFY command.
 func (db *DB) Listen(ctx context.Context, channels ...string) *Listener {
 	ln := &Listener{
-		db: db,
+		db:          db,
+		pingTimeout: time.Second * 10,
 	}
 	ln.init()
 	_ = ln.Listen(ctx, channels...)
