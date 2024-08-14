@@ -148,23 +148,26 @@ func (c *Context) Delete(key string) {
 }
 
 func (c *Context) Param(key string) string {
-	if c.parmas == nil {
-		c.parmas = make(map[string]string)
-		vpath, path := strings.Split(string(c.vpath), "/"),
-			strings.Split(c.Req.URL.Path, "/")
+	if c.parmas != nil {
+		return c.parmas[key]
+	}
 
-		pathLen := len(path)
-		for i := 0; i < len(vpath); i++ {
-			if vpath[i] == "" || i > pathLen {
-				continue
-			}
+	c.parmas = make(map[string]string)
+	vpath, path := strings.Split(string(c.vpath), "/"),
+		strings.Split(c.Req.URL.Path, "/")
 
-			if vpath[i][0] == ':' {
-				c.parmas[string(vpath[i][1:])] = path[i]
-			} else if vpath[i][0] == '*' {
-				c.parmas[string(vpath[i][1:])] = strings.Join(path[i:], "/")
-				break
-			}
+	if vpl, pl := len(vpath), len(path); vpl > pl {
+		vpath = vpath[:pl]
+	}
+
+	for i := 0; i < len(vpath); i++ {
+		if len(vpath[i]) < 1 {
+			continue
+		} else if vpath[i][0] == ':' {
+			c.parmas[vpath[i][1:]] = path[i]
+		} else if vpath[i][0] == '*' {
+			c.parmas[vpath[i][1:]] = strings.Join(path[i:], "/")
+			break
 		}
 	}
 
