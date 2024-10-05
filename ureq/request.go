@@ -208,12 +208,16 @@ func (c *Client) Add(key, value string) *Client {
 
 // Header sets all key, value pairs in h to the request header, it replaces any
 // existing values associated with key.
-func (c *Client) Header(h http.Header) *Client {
+func (c *Client) SetHeader(h http.Header) *Client {
 	for k, v := range h {
 		c.header[k] = v
 	}
 
 	return c
+}
+
+func (c *Client) GetHeader() http.Header {
+	return c.header
 }
 
 var typesMap = map[string]string{
