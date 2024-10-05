@@ -24,7 +24,7 @@ const ubootLogo = `
   ░      ░          ░ ░      ░ ░                													   
 `
 
-var defaultDaemonRestartAfter = 500 * time.Millisecond // 守护模块重启时间间隔
+var defaultDaemonRestartAfter = 500 * time.Millisecond // 默认守护模块重启时间间隔
 
 type Printf func(format string, args ...interface{})
 
@@ -237,7 +237,12 @@ func (b *Boot) Start() bool {
 					c := b.newContext(b.daemonUint[i])
 
 					func() {
-						defer func() { t = recover() != nil }()
+						defer func() {
+							r := recover()
+							c.Printf(ulog.SetANSI(ulog.ANSI.Magenta, "daemon uint panic: %v"), r)
+
+							t = r != nil
+						}()
 						b.daemonUint[i].start(c)
 					}()
 
