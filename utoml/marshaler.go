@@ -13,8 +13,6 @@ import (
 	"strings"
 	"time"
 	"unicode"
-
-	"uw/utoml/internal/characters"
 )
 
 // Marshal serializes a Go value as a TOML document.
@@ -38,7 +36,6 @@ type Encoder struct {
 	w io.Writer
 
 	// global settings
-	literalQuote       byte
 	tablesInline       bool
 	arraysMultiline    bool
 	indentSymbol       string
@@ -50,7 +47,6 @@ type Encoder struct {
 func NewEncoder(w io.Writer) *Encoder {
 	return &Encoder{
 		w:            w,
-		literalQuote: '"',
 		indentSymbol: "  ",
 	}
 }
@@ -63,13 +59,6 @@ func NewEncoder(w io.Writer) *Encoder {
 //	MyField `toml:",inline"`
 func (enc *Encoder) SetTablesInline(inline bool) *Encoder {
 	enc.tablesInline = inline
-	return enc
-}
-
-// SetLiteralQuote defines the character that should be used to quote literals
-// when it's necessary. Defaults to '"'.
-func (enc *Encoder) SetLiteralQuote(q byte) *Encoder {
-	enc.literalQuote = q
 	return enc
 }
 
@@ -481,30 +470,7 @@ func isEmptyStruct(v reflect.Value) bool {
 }
 
 func (enc *Encoder) encodeString(b []byte, v string, options valueOptions) []byte {
-	if needsQuoting(v) {
-		return enc.encodeQuotedString(options.multiline, b, v)
-	}
-
-	return enc.encodeLiteralString(b, v)
-}
-
-func needsQuoting(v string) bool {
-	// TODO: vectorize
-	for _, b := range []byte(v) {
-		if b == '\'' || b == '\r' || b == '\n' || characters.InvalidAscii(b) {
-			return true
-		}
-	}
-	return false
-}
-
-// caller should have checked that the string does not contain new lines or ' .
-func (enc *Encoder) encodeLiteralString(b []byte, v string) []byte {
-	b = append(b, enc.literalQuote)
-	b = append(b, v...)
-	b = append(b, enc.literalQuote)
-
-	return b
+	return enc.encodeQuotedString(options.multiline, b, v)
 }
 
 func (enc *Encoder) encodeQuotedString(multiline bool, b []byte, v string) []byte {
@@ -600,9 +566,6 @@ func (enc *Encoder) encodeTableHeader(ctx encoderCtx, b []byte) ([]byte, error) 
 
 //nolint:cyclop
 func (enc *Encoder) encodeKey(b []byte, k string) []byte {
-	needsQuotation := false
-	cannotUseLiteral := false
-
 	if len(k) == 0 {
 		return append(b, "''"...)
 	}
@@ -612,25 +575,10 @@ func (enc *Encoder) encodeKey(b []byte, k string) []byte {
 			continue
 		}
 
-		if c == rune(enc.literalQuote) {
-			cannotUseLiteral = true
-		}
-
-		needsQuotation = true
-	}
-
-	if needsQuotation && needsQuoting(k) {
-		cannotUseLiteral = true
-	}
-
-	switch {
-	case cannotUseLiteral:
 		return enc.encodeQuotedString(false, b, k)
-	case needsQuotation:
-		return enc.encodeLiteralString(b, k)
-	default:
-		return enc.encodeUnquotedKey(b, k)
 	}
+
+	return enc.encodeUnquotedKey(b, k)
 }
 
 func (enc *Encoder) keyToString(k reflect.Value) (string, error) {

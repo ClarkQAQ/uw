@@ -21,6 +21,10 @@ var (
 	_ = encoding.TextUnmarshaler(&LocalDate{})
 )
 
+func (d *LocalDate) IsZero() bool {
+	return d == nil || (d.Year <= 1970 && d.Month <= 1 && d.Day <= 1)
+}
+
 // AsTime converts d into a specific time instance at midnight in zone.
 func (d *LocalDate) AsTime(zone *time.Location) time.Time {
 	return time.Date(d.Year, time.Month(d.Month), d.Day, 0, 0, 0, 0, zone)
@@ -28,16 +32,34 @@ func (d *LocalDate) AsTime(zone *time.Location) time.Time {
 
 // String returns RFC 3339 representation of d.
 func (d *LocalDate) String() string {
+	if d.Year < 1970 {
+		d.Year = 1970
+	}
+	if d.Month < 1 || d.Month > 12 {
+		d.Month = 1
+	}
+	if d.Day < 1 || d.Day > daysIn(d.Month, d.Year) {
+		d.Day = 1
+	}
+
 	return fmt.Sprintf("%04d-%02d-%02d", d.Year, d.Month, d.Day)
 }
 
 // MarshalText returns RFC 3339 representation of d.
 func (d *LocalDate) MarshalText() ([]byte, error) {
+	if d.IsZero() {
+		return nil, nil
+	}
+
 	return []byte(d.String()), nil
 }
 
 // UnmarshalText parses b using RFC 3339 to fill d.
 func (d *LocalDate) UnmarshalText(b []byte) error {
+	if len(b) < 1 {
+		return nil
+	}
+
 	res, err := parseLocalDate(b)
 	if err != nil {
 		return err
@@ -61,6 +83,10 @@ var (
 	_ = encoding.TextUnmarshaler(&LocalTime{})
 )
 
+func (d *LocalTime) IsZero() bool {
+	return d == nil || d.Hour == 0 || d.Minute == 0 || d.Second == 0
+}
+
 // String returns RFC 3339 representation of d.
 // If d.Nanosecond and d.Precision are zero, the time won't have a nanosecond
 // component. If d.Nanosecond > 0 but d.Precision = 0, then the minimum number
@@ -81,11 +107,19 @@ func (d *LocalTime) String() string {
 
 // MarshalText returns RFC 3339 representation of d.
 func (d *LocalTime) MarshalText() ([]byte, error) {
+	if d.IsZero() {
+		return nil, nil
+	}
+
 	return []byte(d.String()), nil
 }
 
 // UnmarshalText parses b using RFC 3339 to fill d.
 func (d *LocalTime) UnmarshalText(b []byte) error {
+	if len(b) < 1 {
+		return nil
+	}
+
 	res, left, err := parseLocalTime(b)
 	if err == nil && len(left) != 0 {
 		err = unstable.NewParserError(left, "extra characters")
@@ -108,6 +142,10 @@ var (
 	_ = encoding.TextUnmarshaler(&LocalDateTime{})
 )
 
+func (d *LocalDateTime) IsZero() bool {
+	return d == nil || d.LocalDate.IsZero() || d.LocalTime.IsZero()
+}
+
 // AsTime converts d into a specific time instance in zone.
 func (d *LocalDateTime) AsTime(zone *time.Location) time.Time {
 	return time.Date(d.Year, time.Month(d.Month), d.Day, d.Hour, d.Minute, d.Second, d.Nanosecond, zone)
@@ -115,6 +153,10 @@ func (d *LocalDateTime) AsTime(zone *time.Location) time.Time {
 
 // String returns RFC 3339 representation of d.
 func (d *LocalDateTime) String() string {
+	if d.IsZero() {
+		return ""
+	}
+
 	return d.LocalDate.String() + "T" + d.LocalTime.String()
 }
 
@@ -125,6 +167,10 @@ func (d *LocalDateTime) MarshalText() ([]byte, error) {
 
 // UnmarshalText parses b using RFC 3339 to fill d.
 func (d *LocalDateTime) UnmarshalText(data []byte) error {
+	if len(data) < 1 {
+		return nil
+	}
+
 	res, left, err := parseLocalDateTime(data)
 	if err == nil && len(left) != 0 {
 		err = unstable.NewParserError(left, "extra characters")
