@@ -854,7 +854,7 @@ func readDataRow(
 
 		column := columns[colIdx]
 		if err := scanner.ScanColumn(column, colRd, int(n)); err != nil && firstErr == nil {
-			firstErr = internal.Errorf(err.Error())
+			firstErr = internal.Errorf("pg: readDataRow: %v", err)
 		}
 
 		if rd == colRd {
@@ -871,7 +871,7 @@ func readDataRow(
 }
 
 func newModel(mod interface{}) (orm.Model, error) {
-	m, err := orm.NewModel(mod)
+	m, err := orm.NewModel(mod, true)
 	if err != nil {
 		return nil, err
 	}

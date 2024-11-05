@@ -204,9 +204,9 @@ func (q *Query) Model(model ...interface{}) *Query {
 	case l == 0:
 		q.model = nil
 	case l == 1:
-		q.model, err = NewModel(model[0])
+		q.model, err = newModel(model[0], true)
 	case l > 1:
-		q.model, err = NewModel(&model)
+		q.model, err = newModel(&model, true)
 	default:
 		panic("not reached")
 	}

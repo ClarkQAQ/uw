@@ -35,8 +35,8 @@ func (m ModelDiscard) ScanColumn(col types.ColumnInfo, rd types.Reader, n int) e
 	return nil
 }
 
-func NewModel(value interface{}) (Model, error) {
-	return newModel(value, false)
+func NewModel(value interface{}, scan bool) (Model, error) {
+	return newModel(value, scan)
 }
 
 func newScanModel(values []interface{}) (Model, error) {
